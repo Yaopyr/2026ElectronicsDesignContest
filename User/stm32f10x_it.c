@@ -24,6 +24,8 @@
 /* Includes ------------------------------------------------------------------*/
 #include "stm32f10x_it.h"
 
+extern volatile uint32_t g_elapsed_ms;
+
 /** @addtogroup STM32F10x_StdPeriph_Template
   * @{
   */
@@ -134,6 +136,15 @@ void PendSV_Handler(void)
   */
 void SysTick_Handler(void)
 {
+}
+
+void TIM2_IRQHandler(void)
+{
+	if (TIM_GetITStatus(TIM2, TIM_IT_Update) != RESET)
+	{
+		TIM_ClearITPendingBit(TIM2, TIM_IT_Update);
+		g_elapsed_ms++;
+	}
 }
 
 /******************************************************************************/

@@ -4,9 +4,11 @@
 #include "Motor.h"
 #include "OLED.h"
 
-#define BASE_SPEED	300		// 直行基础速度 (0~999)
-#define MAX_DIFF	200		// 边缘最大差速（最外侧传感器时）
+#define BASE_SPEED	270		// 直行基础速度 (0~999)
+#define MAX_DIFF	160		// 边缘最大差速（最外侧传感器时）
 #define POWER		2		// 幂次：2=平方，越大中心越平缓、边缘越陡
+
+volatile uint32_t g_elapsed_ms;	// TIM2中断累计毫秒
 
 int main(void)
 {
@@ -20,19 +22,34 @@ int main(void)
 	Tracking_WaitStart();
 	Delay_ms(50);	// 消抖
 
-	uint32_t elapsed_ms = 0;	// 行驶计时（ms）
+	/* TIM2 1ms 计时：72MHz / 72 = 1MHz, 周期1000 → 1kHz */
+	RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM2, ENABLE);
+	TIM_TimeBaseInitTypeDef TIM_TimeBaseStructure;
+	TIM_TimeBaseStructure.TIM_Period = 1000 - 1;
+	TIM_TimeBaseStructure.TIM_Prescaler = 72 - 1;
+	TIM_TimeBaseStructure.TIM_ClockDivision = TIM_CKD_DIV1;
+	TIM_TimeBaseStructure.TIM_CounterMode = TIM_CounterMode_Up;
+	TIM_TimeBaseInit(TIM2, &TIM_TimeBaseStructure);
+	TIM_ITConfig(TIM2, TIM_IT_Update, ENABLE);
+	NVIC_InitTypeDef NVIC_InitStructure;
+	NVIC_InitStructure.NVIC_IRQChannel = TIM2_IRQn;
+	NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 0;
+	NVIC_InitStructure.NVIC_IRQChannelSubPriority = 0;
+	NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
+	NVIC_Init(&NVIC_InitStructure);
+	TIM_Cmd(TIM2, ENABLE);
 
 	while (1)
 	{
 		uint8_t blackCount = Tracking_GetBlackCount();
 
-		/* 4个及以上传感器检测到黑线 → 停车 */
-		if (blackCount >= 4)
+		/* 3个及以上传感器检测到黑线 → 停车 */
+		if (blackCount >= 3)
 		{
 			Motor_Stop();
 			OLED_Clear();
 			OLED_ShowString(1, 1, "Time:");
-			OLED_ShowNum(2, 1, elapsed_ms / 1000, 5);
+			OLED_ShowNum(2, 1, g_elapsed_ms / 1000, 5);
 			OLED_ShowString(2, 7, "s");
 			while (1);	// 停住不动
 		}
@@ -46,12 +63,12 @@ int main(void)
 		int16_t pos_sum = 0;
 		uint8_t cnt = 0;
 		if (sensors & 0x01) { pos_sum -= 7; cnt++; }	// S0
-		if (sensors & 0x02) { pos_sum -= 5; cnt++; }	// S1
-		if (sensors & 0x04) { pos_sum -= 3; cnt++; }	// S2
-		if (sensors & 0x08) { pos_sum -= 1; cnt++; }	// S3
-		if (sensors & 0x10) { pos_sum += 1; cnt++; }	// S4
-		if (sensors & 0x20) { pos_sum += 3; cnt++; }	// S5
-		if (sensors & 0x40) { pos_sum += 5; cnt++; }	// S6
+		if (sensors & 0x02) { pos_sum -= 6; cnt++; }	// S1
+		if (sensors & 0x04) { pos_sum -= 4; cnt++; }	// S2
+		if (sensors & 0x08) { pos_sum -= 2; cnt++; }	// S3
+		if (sensors & 0x10) { pos_sum += 2; cnt++; }	// S4
+		if (sensors & 0x20) { pos_sum += 4; cnt++; }	// S5
+		if (sensors & 0x40) { pos_sum += 6; cnt++; }	// S6
 		if (sensors & 0x80) { pos_sum += 7; cnt++; }	// S7
 
 		int16_t diff = 0;
@@ -78,14 +95,7 @@ int main(void)
 				Motor_SetRight(BASE_SPEED - diff);
 			}
 		}
-		else
-		{
-			/* 完全没线 → 直行 */
-			Motor_SetLeft( BASE_SPEED);
-			Motor_SetRight(BASE_SPEED);
-		}
 
-		elapsed_ms += 20;
 		Delay_ms(20);
 	}
 }

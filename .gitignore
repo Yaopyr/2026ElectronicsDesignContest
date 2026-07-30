@@ -1,0 +1,31 @@
+# Keil MDK
+*.uvguix.*
+*.uvoptx
+*.scvd
+*.lst
+*.obj
+*.d
+*.crf
+*.lnp
+*.axf
+*.htm
+*.dep
+*.iex
+*.build_log.htm
+*.tra
+*.plg
+*.ORIG
+
+# Build outputs
+Objects/
+Listings/
+DebugConfig/
+build.log
+
+# Editor / OS
+*.bak
+*.swp
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/

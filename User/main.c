@@ -14,7 +14,7 @@
 
 #define PID_KP		0.08
 #define PID_KI		0.02
-#define PID_KD		0.008
+#define PID_KD		0.015//0.008
 
 volatile uint32_t g_elapsed_ms;
 
@@ -196,9 +196,9 @@ int main(void)
 				case 1:	/* 等待稳定在 +340±5 持续 1s */
 					error = (int32_t)(pidInput - 340);
 					if (error < 0) error = -error;
-					if (error <= 5)
+					if (error <= 40)
 					{
-						if (++stable_cnt >= 50)
+						if (++stable_cnt >= 10  /*50*/  )
 						{
 							sub03 = 2;
 							stable_cnt = 0;
@@ -217,16 +217,16 @@ int main(void)
 				case 3:	/* 等待稳定在 -340±5 */
 					error = (int32_t)(pidInput + 340);
 					if (error < 0) error = -error;
-					if (error <= 5)
+					if (error <= 50)
 					{
-						if (++stable_cnt >= 50)
+						if (++stable_cnt >= 25)
 						{
 							Motor_Stop();
 							OLED_Clear();
 							OLED_ShowString(1, 1, "Time:");
 							OLED_ShowNum(2, 1, g_elapsed_ms / 1000, 5);
 							OLED_ShowString(2, 7, "s");
-							pidSetpoint = 0;
+							pidSetpoint = -340;
 							sub03 = 0;
 							stable_cnt = 0;
 							state = STATE_DONE;

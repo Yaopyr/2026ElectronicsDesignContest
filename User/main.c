@@ -13,7 +13,7 @@
 #define POWER		2
 
 #define PID_KP		0.08
-#define PID_KI		0.02
+#define PID_KI		0.015//0.02
 #define PID_KD		0.015//0.008
 
 volatile uint32_t g_elapsed_ms;

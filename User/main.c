@@ -18,9 +18,9 @@
 /* 循迹 PID（来自 gulaoshi track_ctrl.c） */
 #define TRACK_KP      30.0f//40.0f//30.0f//15.0f//25.0f	/* 小误差修正温和（直道）；弯道误差大走饱和区不受影响 */
 #define TRACK_KI      0.3f
-#define GYRO_D_GAIN   15.0f//20.0f//15.0f//10.0f	/* 折中：直道压蛇形、弯道少对抗转向 */
-#define DIFF_MAX      200.0f//150.0f//250.0f
-#define DIFF_MIN     -200.0f//-150.0f//-250.0f
+#define GYRO_D_GAIN   5.0f//10.0f//5.0f//15.0f//20.0f//15.0f//10.0f	/* 弯道中低速段阻尼翻倍；饱和区由DIFF限幅主导 */
+#define DIFF_MAX      120.0f//150.0f//200.0f//150.0f//250.0f
+#define DIFF_MIN     -120.0f//-150.0f//-200.0f//-150.0f//-250.0f
 #define I_MAX         80.0f
 #define I_SEP         15.0f
 #define TRACK_OUT_MAX 1000.0f	/* PID 内部限幅（gulaoshi 双级限幅） */
@@ -301,30 +301,19 @@ int main(void)
 		case STATE_RUN:
 			if (mode == MODE_02)
 			{
-				/* 两阶段终点检测 */
+				/* MODE_02 终点检测：3+ 传感器见黑线且启动超 10s → 直接停车 */
 				{
 					uint8_t black_cnt = Tracking_GetBlackCount();
-
-					if (!finish_armed) {
-						if (black_cnt < 3) {
-							if (++leave_cnt >= 5) {
-								finish_armed = 1;
-								finish_cnt = 0;
-							}
-						} else {
-							leave_cnt = 0;
-						}
-					} else {
-						if (black_cnt >= 3) {
-							if (++finish_cnt >= 5) {
-								decel_time = g_elapsed_ms;
-								ramp_speed = bs;
-								state = STATE_DECEL;
-								break;
-							}
-						} else {
-							finish_cnt = 0;
-						}
+					if (black_cnt >= 3 && g_elapsed_ms > 10000)
+					{
+						decel_time = g_elapsed_ms;	/* 触发即冻结计时 */
+						Motor_Stop();
+						OLED_Clear();
+						OLED_ShowString(1, 1, "Time:");
+						OLED_ShowNum(2, 1, decel_time / 1000, 5);
+						OLED_ShowString(2, 7, "s");
+						state = STATE_DONE;
+						break;
 					}
 				}
 

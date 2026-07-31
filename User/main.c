@@ -102,7 +102,7 @@ typedef enum {
 typedef enum {
 	MODE_02,	// 循迹 + 平衡球
 	MODE_03,	// 定点测试：+340 → -340
-	MODE_04,	// 循迹7秒停止
+	MODE_04,	// 循迹4秒停止（缓缓启停）
 	MODE_05		// 默认速度循迹
 } Mode_TypeDef;
 
@@ -179,7 +179,7 @@ int main(void)
 		static uint8_t lost_cnt = 0;
 
 		uint16_t bs = 300;
-		uint16_t step = 80;	/* gulaoshi 4000/s 斜坡等效（20ms 循环） */
+		uint16_t step = (mode == MODE_04) ? 4 : 80;	/* MODE_04 缓启缓停各约1.5s（300/4*20ms）；其余 gulaoshi 4000/s */
 
 		/* 编码器速度更新 */
 		Encoder_Update();
@@ -380,7 +380,7 @@ int main(void)
 			}
 			else if (mode == MODE_04)
 			{
-				if (g_elapsed_ms >= 7000)
+				if (g_elapsed_ms >= 5000)
 				{
 					ramp_speed = bs;
 					decel_time = g_elapsed_ms;

@@ -151,12 +151,8 @@ void Motor_SetRight(int16_t speed)
   */
 void Motor_Stop(void)
 {
-	/* 滑行停止：PWM清零 + 方向引脚全低 → TB6612滑行，避免急刹甩飞小球 */
+	/* 仅关PWM，保留方向引脚原状态，最大程度滑行 */
 	TIM_SetCompare1(TIM1, 0);
 	TIM_SetCompare4(TIM1, 0);
-	GPIO_ResetBits(AIN1_PORT, AIN1_PIN);
-	GPIO_ResetBits(AIN2_PORT, AIN2_PIN);
-	GPIO_ResetBits(BIN1_PORT, BIN1_PIN);
-	GPIO_ResetBits(BIN2_PORT, BIN2_PIN);
 }
 

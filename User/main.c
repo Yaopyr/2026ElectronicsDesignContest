@@ -19,6 +19,7 @@ volatile uint32_t g_elapsed_ms;
 typedef enum {
 	STATE_WAIT,
 	STATE_RUN,
+	STATE_DECEL,
 	STATE_DONE
 } State_TypeDef;
 
@@ -81,6 +82,8 @@ int main(void)
 		int16_t pos_sum;
 		uint8_t cnt;
 		static uint8_t pb0_prev = 1;
+		static int16_t decel_speed = 0;
+	static uint32_t decel_time = 0;
 
 		switch (state)
 		{
@@ -128,12 +131,9 @@ int main(void)
 				/* 停止条件 */
 				if (Tracking_GetBlackCount() >= 3 && g_elapsed_ms >= 18000)
 				{
-					Motor_Stop();
-					OLED_Clear();
-					OLED_ShowString(1, 1, "Time:");
-					OLED_ShowNum(2, 1, g_elapsed_ms / 1000, 5);
-					OLED_ShowString(2, 7, "s");
-					state = STATE_DONE;
+					decel_speed = bs;
+					decel_time = g_elapsed_ms;
+					state = STATE_DECEL;
 					break;
 				}
 
@@ -189,12 +189,9 @@ int main(void)
 			{
 				if (g_elapsed_ms >= 6000)
 				{
-					Motor_Stop();
-					OLED_Clear();
-					OLED_ShowString(1, 1, "Time:");
-					OLED_ShowNum(2, 1, g_elapsed_ms / 1000, 5);
-					OLED_ShowString(2, 7, "s");
-					state = STATE_DONE;
+					decel_speed = bs;
+					decel_time = g_elapsed_ms;
+					state = STATE_DECEL;
 					break;
 				}
 
@@ -250,12 +247,9 @@ int main(void)
 			{
 				if (Tracking_GetBlackCount() >= 3 && g_elapsed_ms >= 17000)
 				{
-					Motor_Stop();
-					OLED_Clear();
-					OLED_ShowString(1, 1, "Time:");
-					OLED_ShowNum(2, 1, g_elapsed_ms / 1000, 5);
-					OLED_ShowString(2, 7, "s");
-					state = STATE_DONE;
+					decel_speed = bs;
+					decel_time = g_elapsed_ms;
+					state = STATE_DECEL;
 					break;
 				}
 
@@ -381,6 +375,37 @@ int main(void)
 			}
 			break;
 			}
+
+		case STATE_DECEL:
+			{
+				uint16_t step = (decel_speed >= 200) ? 5 : 3;
+				if (decel_speed > step)
+					decel_speed -= step;
+				else
+					decel_speed = 0;
+
+				Motor_SetLeft( decel_speed);
+				Motor_SetRight(decel_speed);
+
+				/* 平衡球 */
+				pidInput = (double)UART_GetBallPosition();
+				PID_Compute(&pid);
+				Stepper_SetTarget((int32_t)pidOutput);
+
+				OLED_ShowString(1, 1, "T:");
+				OLED_ShowNum(1, 3, g_elapsed_ms / 1000, 4);
+				OLED_ShowString(1, 7, "s");
+
+				if (decel_speed == 0)
+				{
+					OLED_Clear();
+					OLED_ShowString(1, 1, "Time:");
+					OLED_ShowNum(2, 1, decel_time / 1000, 5);
+					OLED_ShowString(2, 7, "s");
+					state = STATE_DONE;
+				}
+			}
+			break;
 
 		case STATE_DONE:
 			/* 平衡球 */

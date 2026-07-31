@@ -12,11 +12,11 @@
 
 /* 球平衡 PID */
 #define PID_KP		1.2
-#define PID_KI		0.15
+#define PID_KI		0.25//0.2
 #define PID_KD		0.35
 
 /* 循迹 PID（来自 gulaoshi track_ctrl.c） */
-#define TRACK_KP      30.0f//40.0f//30.0f//15.0f//25.0f	/* 小误差修正温和（直道）；弯道误差大走饱和区不受影响 */
+#define TRACK_KP      40.0f//30.0f//15.0f//25.0f	/* 小误差修正温和（直道）；弯道误差大走饱和区不受影响 */
 #define TRACK_KI      0.3f
 #define GYRO_D_GAIN   5.0f//10.0f//5.0f//15.0f//20.0f//15.0f//10.0f	/* 弯道中低速段阻尼翻倍；饱和区由DIFF限幅主导 */
 #define DIFF_MAX      120.0f//150.0f//200.0f//150.0f//250.0f
@@ -95,6 +95,7 @@ typedef enum {
 	STATE_ACCEL,
 	STATE_RUN,
 	STATE_DECEL,
+	STATE_BACK,		/* MODE_02 停止后全速后退 */
 	STATE_DONE
 } State_TypeDef;
 
@@ -167,6 +168,7 @@ int main(void)
 		static uint8_t pb0_prev = 1;
 		static int16_t ramp_speed = 0;
 		static uint32_t decel_time = 0;
+		static uint32_t back_start_ms = 0;	/* MODE_02 停止后全速后退起点 */
 
 		/* 两阶段终点检测 */
 		static uint8_t finish_armed = 0;
@@ -290,6 +292,7 @@ int main(void)
 				g_elapsed_ms = 0;
 				ramp_speed = 0;
 				decel_time = 0;
+				back_start_ms = 0;
 				finish_armed = 0;
 				finish_cnt = 0;
 				leave_cnt = 0;
@@ -304,7 +307,7 @@ int main(void)
 				/* MODE_02 终点检测：3+ 传感器见黑线且启动超 10s → 直接停车 */
 				{
 					uint8_t black_cnt = Tracking_GetBlackCount();
-					if (black_cnt >= 3 && g_elapsed_ms > 10000)
+					if (black_cnt >= 4 && g_elapsed_ms > 17000)
 					{
 						decel_time = g_elapsed_ms;	/* 触发即冻结计时 */
 						Motor_Stop();
@@ -312,7 +315,8 @@ int main(void)
 						OLED_ShowString(1, 1, "Time:");
 						OLED_ShowNum(2, 1, decel_time / 1000, 5);
 						OLED_ShowString(2, 7, "s");
-						state = STATE_DONE;
+						back_start_ms = g_elapsed_ms;	/* 记录后退起点 */
+						state = STATE_BACK;
 						break;
 					}
 				}
@@ -656,6 +660,22 @@ int main(void)
 			}
 			break;
 
+		case STATE_BACK:
+			if (g_elapsed_ms - back_start_ms >= 100)
+			{
+				Motor_Stop();
+				state = STATE_DONE;
+				break;
+			}
+			Motor_SetLeft(-999);	/* 全速后退 */
+			Motor_SetRight(-999);
+
+			/* 平衡球 */
+			pidInput = (double)UART_GetBallPosition();
+			PID_Compute(&pid);
+			Stepper_SetTarget((int32_t)pidOutput);
+			break;
+
 		case STATE_DONE:
 			Motor_Stop();	/* 清残留差速，防止原地打转 */
 			pidInput = (double)UART_GetBallPosition();
@@ -669,6 +689,7 @@ int main(void)
 				g_elapsed_ms = 0;
 				ramp_speed = 0;
 				decel_time = 0;
+				back_start_ms = 0;
 				finish_armed = 0;
 				finish_cnt = 0;
 				leave_cnt = 0;

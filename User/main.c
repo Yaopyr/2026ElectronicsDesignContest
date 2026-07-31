@@ -93,6 +93,7 @@ int main(void)
 		switch (state)
 		{
 		case STATE_ACCEL:
+			if (mode == MODE_03) { state = STATE_RUN; break; }
 			{
 				uint16_t step = (bs >= 200) ? 5 : 3;
 				if (ramp_speed + step < bs)

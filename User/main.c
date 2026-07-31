@@ -100,8 +100,33 @@ int main(void)
 					ramp_speed += step;
 				else
 					ramp_speed = bs;
-				Motor_SetLeft( ramp_speed);
-				Motor_SetRight(ramp_speed);
+				sensors = Tracking_Read();
+				pos_sum = 0;
+				cnt = 0;
+				if (sensors & 0x01) { pos_sum -= 7; cnt++; }
+				if (sensors & 0x02) { pos_sum -= 6; cnt++; }
+				if (sensors & 0x04) { pos_sum -= 5; cnt++; }
+				if (sensors & 0x08) { pos_sum -= 2; cnt++; }
+				if (sensors & 0x10) { pos_sum += 2; cnt++; }
+				if (sensors & 0x20) { pos_sum += 5; cnt++; }
+				if (sensors & 0x40) { pos_sum += 6; cnt++; }
+				if (sensors & 0x80) { pos_sum += 7; cnt++; }
+				if (cnt > 0)
+				{
+					int16_t pos = pos_sum / cnt;
+					uint16_t abs_pos = (pos > 0) ? pos : -pos;
+					uint16_t numerator = md;
+					for (uint8_t p = 0; p < POWER; p++)
+						numerator = numerator * abs_pos / 7;
+					int16_t diff = numerator;
+					if (pos < 0) { Motor_SetLeft(ramp_speed - diff); Motor_SetRight(ramp_speed + diff); }
+					else         { Motor_SetLeft(ramp_speed + diff); Motor_SetRight(ramp_speed - diff); }
+				}
+				else
+				{
+					Motor_SetLeft( ramp_speed);
+					Motor_SetRight(ramp_speed);
+				}
 				/* 平衡球 */
 				pidInput = (double)UART_GetBallPosition();
 				PID_Compute(&pid);
@@ -403,14 +428,39 @@ int main(void)
 
 		case STATE_DECEL:
 			{
-				uint16_t step = (ramp_speed >= 200) ? 5 : 3;
+				uint16_t step = (bs >= 200) ? 2 : 1;
 				if (ramp_speed > step)
 					ramp_speed -= step;
 				else
 					ramp_speed = 0;
 
-				Motor_SetLeft( ramp_speed);
-				Motor_SetRight(ramp_speed);
+				sensors = Tracking_Read();
+				pos_sum = 0;
+				cnt = 0;
+				if (sensors & 0x01) { pos_sum -= 7; cnt++; }
+				if (sensors & 0x02) { pos_sum -= 6; cnt++; }
+				if (sensors & 0x04) { pos_sum -= 5; cnt++; }
+				if (sensors & 0x08) { pos_sum -= 2; cnt++; }
+				if (sensors & 0x10) { pos_sum += 2; cnt++; }
+				if (sensors & 0x20) { pos_sum += 5; cnt++; }
+				if (sensors & 0x40) { pos_sum += 6; cnt++; }
+				if (sensors & 0x80) { pos_sum += 7; cnt++; }
+				if (cnt > 0)
+				{
+					int16_t pos = pos_sum / cnt;
+					uint16_t abs_pos = (pos > 0) ? pos : -pos;
+					uint16_t numerator = md;
+					for (uint8_t p = 0; p < POWER; p++)
+						numerator = numerator * abs_pos / 7;
+					int16_t diff = numerator;
+					if (pos < 0) { Motor_SetLeft(ramp_speed - diff); Motor_SetRight(ramp_speed + diff); }
+					else         { Motor_SetLeft(ramp_speed + diff); Motor_SetRight(ramp_speed - diff); }
+				}
+				else
+				{
+					Motor_SetLeft( ramp_speed);
+					Motor_SetRight(ramp_speed);
+				}
 
 				/* 平衡球 */
 				pidInput = (double)UART_GetBallPosition();

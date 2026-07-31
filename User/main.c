@@ -12,9 +12,9 @@
 #define MAX_DIFF	160
 #define POWER		2
 
-#define PID_KP		2.0
-#define PID_KI		0.1
-#define PID_KD		0.5
+#define PID_KP		0.08
+#define PID_KI		0.02
+#define PID_KD		0.008
 
 volatile uint32_t g_elapsed_ms;
 
@@ -27,9 +27,6 @@ int main(void)
 	UART_Init();
 	Stepper_Init();
 	OLED_ShowString(1, 1, "Ready!");
-
-	Tracking_WaitStart();
-	Delay_ms(50);
 
 	/* TIM2 1ms */
 	RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM2, ENABLE);
@@ -56,6 +53,25 @@ int main(void)
 	PID_SetMode(&pid, _PID_MODE_AUTOMATIC);
 	PID_SetSampleTime(&pid, 20);
 	PID_SetOutputLimits(&pid, -STEP_RANGE, STEP_RANGE);
+
+	/* 阶段1：上电即运行平衡球，等待 PB15 启动信号 */
+	while (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_15) == 1)
+	{
+		pidInput = (double)UART_GetBallPosition();
+		PID_Compute(&pid);
+		Stepper_SetTarget((int32_t)pidOutput);
+
+		OLED_ShowString(2, 1, "P:");
+		OLED_ShowSignedNum(2, 3, (int32_t)pidInput, 4);
+		OLED_ShowString(3, 1, "T:");
+		OLED_ShowSignedNum(3, 3, (int32_t)pidOutput, 4);
+
+		Delay_ms(20);
+	}
+
+	/* 阶段2：启动信号触发，循迹 + 平衡球 */
+	OLED_Clear();
+	Delay_ms(50);
 
 	while (1)
 	{

@@ -10,9 +10,9 @@
 
 #define POWER		2
 
-#define PID_KP		0.08
-#define PID_KI		0.015//0.02
-#define PID_KD		0.015//0.008
+#define PID_KP		1.6//0.8//0.2
+#define PID_KI		0.08//0.04//0.01//0.015//0.02
+#define PID_KD		0.1//0.025//0.02//0.015//0.008
 
 volatile uint32_t g_elapsed_ms;
 
@@ -37,7 +37,6 @@ int main(void)
 	Motor_Init();
 	UART_Init();
 	Stepper_Init();
-	OLED_ShowString(1, 1, "Ready!");
 
 	/* TIM2 1ms */
 	RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM2, ENABLE);
@@ -121,8 +120,8 @@ int main(void)
 		case STATE_RUN:
 		{
 			uint16_t bs, md;
-			if (mode == MODE_02) { bs = 270; md = 160; }
-			else                 { bs = 200; md = 80;  }
+			if (mode == MODE_02) { bs = 260; md = 85; }
+			else                 { bs = 200; md = 70;  }
 
 			if (mode == MODE_02)
 			{
@@ -188,7 +187,7 @@ int main(void)
 			}
 			else if (mode == MODE_04) /* 循迹3秒停止 */
 			{
-				if (g_elapsed_ms >= 4500)
+				if (g_elapsed_ms >= 6000)
 				{
 					Motor_Stop();
 					OLED_Clear();
@@ -249,7 +248,7 @@ int main(void)
 			}
 			else if (mode == MODE_05) /* 默认速度循迹 */
 			{
-				if (Tracking_GetBlackCount() >= 3 && g_elapsed_ms >= 18000)
+				if (Tracking_GetBlackCount() >= 3 && g_elapsed_ms >= 17000)
 				{
 					Motor_Stop();
 					OLED_Clear();
@@ -327,7 +326,7 @@ int main(void)
 					if (error < 0) error = -error;
 					if (error <= 40)
 					{
-						if (++stable_cnt >= 10  /*50*/  )
+						if (++stable_cnt >= 5  /*50*/  )
 						{
 							sub03 = 2;
 							stable_cnt = 0;
@@ -348,7 +347,7 @@ int main(void)
 					if (error < 0) error = -error;
 					if (error <= 50)
 					{
-						if (++stable_cnt >= 25)
+						if (++stable_cnt >= 5)
 						{
 							Motor_Stop();
 							OLED_Clear();

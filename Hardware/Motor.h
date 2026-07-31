@@ -7,5 +7,6 @@ void Motor_Init(void);
 void Motor_SetLeft(int16_t speed);
 void Motor_SetRight(int16_t speed);
 void Motor_Stop(void);
+void Motor_Enable(void);
 
 #endif

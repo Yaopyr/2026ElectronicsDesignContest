@@ -160,3 +160,8 @@ void Motor_Stop(void)
 	GPIO_SetBits(BIN2_PORT, BIN2_PIN);
 	GPIO_ResetBits(STBY_PORT, STBY_PIN);	// 双重保险
 }
+
+void Motor_Enable(void)
+{
+	GPIO_SetBits(STBY_PORT, STBY_PIN);
+}

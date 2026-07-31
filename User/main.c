@@ -18,6 +18,12 @@
 
 volatile uint32_t g_elapsed_ms;
 
+typedef enum {
+	STATE_WAIT,
+	STATE_RUN,
+	STATE_DONE
+} State_TypeDef;
+
 int main(void)
 {
 	NVIC_PriorityGroupConfig(NVIC_PriorityGroup_2);
@@ -54,85 +60,112 @@ int main(void)
 	PID_SetSampleTime(&pid, 20);
 	PID_SetOutputLimits(&pid, -STEP_RANGE, STEP_RANGE);
 
-	/* 阶段1：上电即运行平衡球，等待 PB15 启动信号 */
-	while (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_15) == 1)
-	{
-		pidInput = (double)UART_GetBallPosition();
-		PID_Compute(&pid);
-		Stepper_SetTarget((int32_t)pidOutput);
-
-		OLED_ShowString(2, 1, "P:");
-		OLED_ShowSignedNum(2, 3, (int32_t)pidInput, 4);
-		OLED_ShowString(3, 1, "T:");
-		OLED_ShowSignedNum(3, 3, (int32_t)pidOutput, 4);
-
-		Delay_ms(20);
-	}
-
-	/* 阶段2：启动信号触发，循迹 + 平衡球 */
-	OLED_Clear();
-	Delay_ms(50);
+	/* 状态机 */
+	State_TypeDef state = STATE_WAIT;
 
 	while (1)
 	{
-		uint8_t blackCount = Tracking_GetBlackCount();
+		uint8_t sensors;
+		int16_t pos_sum;
+		uint8_t cnt;
 
-		if (blackCount >= 3)
+		switch (state)
 		{
-			Motor_Stop();
-			OLED_Clear();
-			OLED_ShowString(1, 1, "Time:");
-			OLED_ShowNum(2, 1, g_elapsed_ms / 1000, 5);
-			OLED_ShowString(2, 7, "s");
-			while (1);
-		}
+		case STATE_WAIT:
+			/* 平衡球 */
+			pidInput = (double)UART_GetBallPosition();
+			PID_Compute(&pid);
+			Stepper_SetTarget((int32_t)pidOutput);
 
-		uint8_t sensors = Tracking_Read();
-		OLED_ShowBinNum(1, 1, sensors, 8);
+			OLED_ShowString(2, 1, "P:");
+			OLED_ShowSignedNum(2, 3, (int32_t)pidInput, 4);
+			OLED_ShowString(3, 1, "T:");
+			OLED_ShowSignedNum(3, 3, (int32_t)pidOutput, 4);
 
-		/* 循迹 */
-		int16_t pos_sum = 0;
-		uint8_t cnt = 0;
-		if (sensors & 0x01) { pos_sum -= 7; cnt++; }
-		if (sensors & 0x02) { pos_sum -= 6; cnt++; }
-		if (sensors & 0x04) { pos_sum -= 4; cnt++; }
-		if (sensors & 0x08) { pos_sum -= 2; cnt++; }
-		if (sensors & 0x10) { pos_sum += 2; cnt++; }
-		if (sensors & 0x20) { pos_sum += 4; cnt++; }
-		if (sensors & 0x40) { pos_sum += 6; cnt++; }
-		if (sensors & 0x80) { pos_sum += 7; cnt++; }
-
-		if (cnt > 0)
-		{
-			int16_t pos = pos_sum / cnt;
-			uint16_t abs_pos = (pos > 0) ? pos : -pos;
-			uint16_t numerator = MAX_DIFF;
-			for (uint8_t p = 0; p < POWER; p++)
-				numerator = numerator * abs_pos / 7;
-			int16_t diff = numerator;
-
-			if (pos < 0)
+			if (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_15) == 0)
 			{
-				Motor_SetLeft( BASE_SPEED - diff);
-				Motor_SetRight(BASE_SPEED + diff);
+				OLED_Clear();
+				g_elapsed_ms = 0;
+				state = STATE_RUN;
 			}
-			else
+			break;
+
+		case STATE_RUN:
+			/* 停止条件 */
+			if (Tracking_GetBlackCount() >= 3)
 			{
-				Motor_SetLeft( BASE_SPEED + diff);
-				Motor_SetRight(BASE_SPEED - diff);
+				Motor_Stop();
+				OLED_Clear();
+				OLED_ShowString(1, 1, "Time:");
+				OLED_ShowNum(2, 1, g_elapsed_ms / 1000, 5);
+				OLED_ShowString(2, 7, "s");
+				state = STATE_DONE;
+				break;
 			}
+
+			sensors = Tracking_Read();
+			OLED_ShowBinNum(1, 1, sensors, 8);
+
+			/* 循迹 */
+			pos_sum = 0;
+			cnt = 0;
+			if (sensors & 0x01) { pos_sum -= 7; cnt++; }
+			if (sensors & 0x02) { pos_sum -= 6; cnt++; }
+			if (sensors & 0x04) { pos_sum -= 4; cnt++; }
+			if (sensors & 0x08) { pos_sum -= 2; cnt++; }
+			if (sensors & 0x10) { pos_sum += 2; cnt++; }
+			if (sensors & 0x20) { pos_sum += 4; cnt++; }
+			if (sensors & 0x40) { pos_sum += 6; cnt++; }
+			if (sensors & 0x80) { pos_sum += 7; cnt++; }
+
+			if (cnt > 0)
+			{
+				int16_t pos = pos_sum / cnt;
+				uint16_t abs_pos = (pos > 0) ? pos : -pos;
+				uint16_t numerator = MAX_DIFF;
+				for (uint8_t p = 0; p < POWER; p++)
+					numerator = numerator * abs_pos / 7;
+				int16_t diff = numerator;
+
+				if (pos < 0)
+				{
+					Motor_SetLeft( BASE_SPEED - diff);
+					Motor_SetRight(BASE_SPEED + diff);
+				}
+				else
+				{
+					Motor_SetLeft( BASE_SPEED + diff);
+					Motor_SetRight(BASE_SPEED - diff);
+				}
+			}
+
+			/* 平衡球 */
+			pidInput = (double)UART_GetBallPosition();
+			PID_Compute(&pid);
+			Stepper_SetTarget((int32_t)pidOutput);
+
+			OLED_ShowString(2, 1, "P:");
+			OLED_ShowSignedNum(2, 3, (int32_t)pidInput, 4);
+			OLED_ShowString(3, 1, "T:");
+			OLED_ShowSignedNum(3, 3, (int32_t)pidOutput, 4);
+			break;
+
+		case STATE_DONE:
+			/* 平衡球 */
+			pidInput = (double)UART_GetBallPosition();
+			PID_Compute(&pid);
+			Stepper_SetTarget((int32_t)pidOutput);
+
+			/* 按 PB15 重新开始 */
+			if (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_15) == 0)
+			{
+				Motor_Enable();
+				OLED_Clear();
+				g_elapsed_ms = 0;
+				state = STATE_RUN;
+			}
+			break;
 		}
-
-		/* 小球平衡 */
-		pidInput = (double)UART_GetBallPosition();
-		PID_Compute(&pid);
-		Stepper_SetTarget((int32_t)pidOutput);
-
-		/* 调试 */
-		OLED_ShowString(2, 1, "P:");
-		OLED_ShowSignedNum(2, 3, (int32_t)pidInput, 4);
-		OLED_ShowString(3, 1, "T:");
-		OLED_ShowSignedNum(3, 3, (int32_t)pidOutput, 4);
 
 		Delay_ms(20);
 	}

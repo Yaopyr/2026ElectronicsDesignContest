@@ -135,18 +135,20 @@ int main(void)
 				}
 
 				sensors = Tracking_Read();
-				OLED_ShowBinNum(1, 1, sensors, 8);
+				OLED_ShowString(1, 1, "T:");
+				OLED_ShowNum(1, 3, g_elapsed_ms / 1000, 4);
+				OLED_ShowString(1, 7, "s");
 
 				/* 循迹 */
 				pos_sum = 0;
 				cnt = 0;
 				if (sensors & 0x01) { pos_sum -= 7; cnt++; }
-				if (sensors & 0x02) { pos_sum -= 6; cnt++; }
-				if (sensors & 0x04) { pos_sum -= 4; cnt++; }
+				if (sensors & 0x02) { pos_sum -= 5; cnt++; }
+				if (sensors & 0x04) { pos_sum -= 3; cnt++; }
 				if (sensors & 0x08) { pos_sum -= 2; cnt++; }
 				if (sensors & 0x10) { pos_sum += 2; cnt++; }
-				if (sensors & 0x20) { pos_sum += 4; cnt++; }
-				if (sensors & 0x40) { pos_sum += 6; cnt++; }
+				if (sensors & 0x20) { pos_sum += 3; cnt++; }
+				if (sensors & 0x40) { pos_sum += 5; cnt++; }
 				if (sensors & 0x80) { pos_sum += 7; cnt++; }
 
 				if (cnt > 0)
@@ -194,7 +196,9 @@ int main(void)
 				}
 
 				sensors = Tracking_Read();
-				OLED_ShowBinNum(1, 1, sensors, 8);
+				OLED_ShowString(1, 1, "T:");
+				OLED_ShowNum(1, 3, g_elapsed_ms / 1000, 4);
+				OLED_ShowString(1, 7, "s");
 
 				/* 循迹 */
 				pos_sum = 0;
@@ -307,6 +311,9 @@ int main(void)
 				OLED_ShowSignedNum(2, 3, (int32_t)pidInput, 4);
 				OLED_ShowString(3, 1, "T:");
 				OLED_ShowSignedNum(3, 3, (int32_t)pidSetpoint, 4);
+				OLED_ShowString(4, 1, "t:");
+				OLED_ShowNum(4, 3, g_elapsed_ms / 1000, 4);
+				OLED_ShowString(4, 7, "s");
 			}
 			break;
 

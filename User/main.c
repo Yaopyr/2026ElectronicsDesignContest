@@ -8,8 +8,6 @@
 
 #include "pid.h"
 
-#define BASE_SPEED	200//270
-#define MAX_DIFF	80//160
 #define POWER		2
 
 #define PID_KP		0.08
@@ -27,7 +25,8 @@ typedef enum {
 typedef enum {
 	MODE_02,	// 循迹 + 平衡球
 	MODE_03,	// 定点测试：+340 → -340
-	MODE_04		// 循迹3秒停止
+	MODE_04,	// 循迹3秒停止
+	MODE_05		// 默认速度循迹
 } Mode_TypeDef;
 
 int main(void)
@@ -94,7 +93,7 @@ int main(void)
 
 			/* OLED：模式 + 状态 */
 			OLED_ShowString(1, 1, "M:");
-			OLED_ShowNum(1, 3, (mode == MODE_02) ? 2 : (mode == MODE_03) ? 3 : 4, 2);
+			OLED_ShowNum(1, 3, (mode == MODE_02) ? 2 : (mode == MODE_03) ? 3 : (mode == MODE_04) ? 4 : 5, 2);
 			OLED_ShowString(2, 1, "P:");
 			OLED_ShowSignedNum(2, 3, (int32_t)pidInput, 4);
 			OLED_ShowString(3, 1, "T:");
@@ -104,7 +103,7 @@ int main(void)
 			{
 				uint8_t pb0_now = GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_0);
 				if (pb0_prev == 1 && pb0_now == 0)
-					mode = (mode == MODE_02) ? MODE_03 : (mode == MODE_03) ? MODE_04 : MODE_02;
+					mode = (mode == MODE_02) ? MODE_03 : (mode == MODE_03) ? MODE_04 : (mode == MODE_04) ? MODE_05 : MODE_02;
 				pb0_prev = pb0_now;
 			}
 
@@ -120,6 +119,11 @@ int main(void)
 			break;
 
 		case STATE_RUN:
+		{
+			uint16_t bs, md;
+			if (mode == MODE_02) { bs = 270; md = 160; }
+			else                 { bs = 200; md = 80;  }
+
 			if (mode == MODE_02)
 			{
 				/* 停止条件 */
@@ -155,20 +159,20 @@ int main(void)
 				{
 					int16_t pos = pos_sum / cnt;
 					uint16_t abs_pos = (pos > 0) ? pos : -pos;
-					uint16_t numerator = MAX_DIFF;
+					uint16_t numerator = md;
 					for (uint8_t p = 0; p < POWER; p++)
 						numerator = numerator * abs_pos / 7;
 					int16_t diff = numerator;
 
 					if (pos < 0)
 					{
-						Motor_SetLeft( BASE_SPEED - diff);
-						Motor_SetRight(BASE_SPEED + diff);
+						Motor_SetLeft( bs - diff);
+						Motor_SetRight(bs + diff);
 					}
 					else
 					{
-						Motor_SetLeft( BASE_SPEED + diff);
-						Motor_SetRight(BASE_SPEED - diff);
+						Motor_SetLeft( bs + diff);
+						Motor_SetRight(bs - diff);
 					}
 				}
 
@@ -216,20 +220,81 @@ int main(void)
 				{
 					int16_t pos = pos_sum / cnt;
 					uint16_t abs_pos = (pos > 0) ? pos : -pos;
-					uint16_t numerator = MAX_DIFF;
+					uint16_t numerator = md;
 					for (uint8_t p = 0; p < POWER; p++)
 						numerator = numerator * abs_pos / 7;
 					int16_t diff = numerator;
 
 					if (pos < 0)
 					{
-						Motor_SetLeft( BASE_SPEED - diff);
-						Motor_SetRight(BASE_SPEED + diff);
+						Motor_SetLeft( bs - diff);
+						Motor_SetRight(bs + diff);
 					}
 					else
 					{
-						Motor_SetLeft( BASE_SPEED + diff);
-						Motor_SetRight(BASE_SPEED - diff);
+						Motor_SetLeft( bs + diff);
+						Motor_SetRight(bs - diff);
+					}
+				}
+
+				/* 平衡球 */
+				pidInput = (double)UART_GetBallPosition();
+				PID_Compute(&pid);
+				Stepper_SetTarget((int32_t)pidOutput);
+
+				OLED_ShowString(2, 1, "P:");
+				OLED_ShowSignedNum(2, 3, (int32_t)pidInput, 4);
+				OLED_ShowString(3, 1, "T:");
+				OLED_ShowSignedNum(3, 3, (int32_t)pidOutput, 4);
+			}
+			else if (mode == MODE_05) /* 默认速度循迹 */
+			{
+				if (Tracking_GetBlackCount() >= 3 && g_elapsed_ms >= 18000)
+				{
+					Motor_Stop();
+					OLED_Clear();
+					OLED_ShowString(1, 1, "Time:");
+					OLED_ShowNum(2, 1, g_elapsed_ms / 1000, 5);
+					OLED_ShowString(2, 7, "s");
+					state = STATE_DONE;
+					break;
+				}
+
+				sensors = Tracking_Read();
+				OLED_ShowString(1, 1, "T:");
+				OLED_ShowNum(1, 3, g_elapsed_ms / 1000, 4);
+				OLED_ShowString(1, 7, "s");
+
+				/* 循迹 */
+				pos_sum = 0;
+				cnt = 0;
+				if (sensors & 0x01) { pos_sum -= 7; cnt++; }
+				if (sensors & 0x02) { pos_sum -= 6; cnt++; }
+				if (sensors & 0x04) { pos_sum -= 4; cnt++; }
+				if (sensors & 0x08) { pos_sum -= 2; cnt++; }
+				if (sensors & 0x10) { pos_sum += 2; cnt++; }
+				if (sensors & 0x20) { pos_sum += 4; cnt++; }
+				if (sensors & 0x40) { pos_sum += 6; cnt++; }
+				if (sensors & 0x80) { pos_sum += 7; cnt++; }
+
+				if (cnt > 0)
+				{
+					int16_t pos = pos_sum / cnt;
+					uint16_t abs_pos = (pos > 0) ? pos : -pos;
+					uint16_t numerator = md;
+					for (uint8_t p = 0; p < POWER; p++)
+						numerator = numerator * abs_pos / 7;
+					int16_t diff = numerator;
+
+					if (pos < 0)
+					{
+						Motor_SetLeft( bs - diff);
+						Motor_SetRight(bs + diff);
+					}
+					else
+					{
+						Motor_SetLeft( bs + diff);
+						Motor_SetRight(bs - diff);
 					}
 				}
 
@@ -316,6 +381,7 @@ int main(void)
 				OLED_ShowString(4, 7, "s");
 			}
 			break;
+			}
 
 		case STATE_DONE:
 			/* 平衡球 */

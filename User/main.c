@@ -8,8 +8,8 @@
 
 #include "pid.h"
 
-#define BASE_SPEED	270
-#define MAX_DIFF	160
+#define BASE_SPEED	200//270
+#define MAX_DIFF	80//160
 #define POWER		2
 
 #define PID_KP		0.08
@@ -123,7 +123,7 @@ int main(void)
 			if (mode == MODE_02)
 			{
 				/* 停止条件 */
-				if (Tracking_GetBlackCount() >= 3)
+				if (Tracking_GetBlackCount() >= 3 && g_elapsed_ms >= 18000)
 				{
 					Motor_Stop();
 					OLED_Clear();
@@ -143,12 +143,12 @@ int main(void)
 				pos_sum = 0;
 				cnt = 0;
 				if (sensors & 0x01) { pos_sum -= 7; cnt++; }
-				if (sensors & 0x02) { pos_sum -= 5; cnt++; }
-				if (sensors & 0x04) { pos_sum -= 3; cnt++; }
+				if (sensors & 0x02) { pos_sum -= 6; cnt++; }
+				if (sensors & 0x04) { pos_sum -= 5; cnt++; }
 				if (sensors & 0x08) { pos_sum -= 2; cnt++; }
 				if (sensors & 0x10) { pos_sum += 2; cnt++; }
-				if (sensors & 0x20) { pos_sum += 3; cnt++; }
-				if (sensors & 0x40) { pos_sum += 5; cnt++; }
+				if (sensors & 0x20) { pos_sum += 5; cnt++; }
+				if (sensors & 0x40) { pos_sum += 6; cnt++; }
 				if (sensors & 0x80) { pos_sum += 7; cnt++; }
 
 				if (cnt > 0)

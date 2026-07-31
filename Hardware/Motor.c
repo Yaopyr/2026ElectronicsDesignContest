@@ -151,17 +151,12 @@ void Motor_SetRight(int16_t speed)
   */
 void Motor_Stop(void)
 {
-	/* 主动短路刹车：PWM清零 + 方向引脚全高（IN1=IN2=HIGH → 低侧FET导通，电机端子短接制动）*/
+	/* 滑行停止：PWM清零 + 方向引脚全低 → TB6612滑行，避免急刹甩飞小球 */
 	TIM_SetCompare1(TIM1, 0);
 	TIM_SetCompare4(TIM1, 0);
-	GPIO_SetBits(AIN1_PORT, AIN1_PIN);
-	GPIO_SetBits(AIN2_PORT, AIN2_PIN);
-	GPIO_SetBits(BIN1_PORT, BIN1_PIN);
-	GPIO_SetBits(BIN2_PORT, BIN2_PIN);
-	GPIO_ResetBits(STBY_PORT, STBY_PIN);	// 双重保险
+	GPIO_ResetBits(AIN1_PORT, AIN1_PIN);
+	GPIO_ResetBits(AIN2_PORT, AIN2_PIN);
+	GPIO_ResetBits(BIN1_PORT, BIN1_PIN);
+	GPIO_ResetBits(BIN2_PORT, BIN2_PIN);
 }
 
-void Motor_Enable(void)
-{
-	GPIO_SetBits(STBY_PORT, STBY_PIN);
-}

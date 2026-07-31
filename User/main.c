@@ -10,9 +10,9 @@
 
 #define POWER		2
 
-#define PID_KP		1.6//0.8//0.2
-#define PID_KI		0.08//0.04//0.01//0.015//0.02
-#define PID_KD		0.1//0.025//0.02//0.015//0.008
+#define PID_KP		1.2//1.6//0.8//0.2
+#define PID_KI		0.1//0.04//0.01//0.015//0.02
+#define PID_KD		0.3//0.25//0.025//0.02//0.015//0.008
 
 volatile uint32_t g_elapsed_ms;
 
@@ -391,7 +391,6 @@ int main(void)
 			/* 按 PB15 重新开始 */
 			if (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_15) == 0)
 			{
-				Motor_Enable();
 				OLED_Clear();
 				g_elapsed_ms = 0;
 				state = STATE_RUN;

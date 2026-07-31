@@ -775,6 +775,16 @@
               <FileType>5</FileType>
               <FilePath>.\Hardware\UART.h</FilePath>
             </File>
+            <File>
+              <FileName>JY61P.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\Hardware\JY61P.c</FilePath>
+            </File>
+            <File>
+              <FileName>JY61P.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\Hardware\JY61P.h</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>

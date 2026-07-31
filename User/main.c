@@ -6,7 +6,7 @@
 #include "UART.h"
 #include "Stepper.h"
 #include "Encoder.h"
-#include "IMU.h"
+#include "JY61P.h"
 
 #include "pid.h"
 
@@ -18,11 +18,12 @@
 /* 循迹 PID（来自 gulaoshi track_ctrl.c） */
 #define TRACK_KP      40.0f
 #define TRACK_KI      0.3f
-#define GYRO_D_GAIN   5.0f
-#define DIFF_MAX      150.0f
-#define DIFF_MIN     -150.0f
+#define GYRO_D_GAIN   15.0f//10.0f	/* 折中：直道压蛇形、弯道少对抗转向 */
+#define DIFF_MAX      250.0f
+#define DIFF_MIN     -250.0f
 #define I_MAX         80.0f
 #define I_SEP         15.0f
+#define TRACK_OUT_MAX 1000.0f	/* PID 内部限幅（gulaoshi 双级限幅） */
 
 volatile uint32_t g_elapsed_ms;
 
@@ -114,12 +115,10 @@ int main(void)
 	Stepper_Init();
 	Encoder_Init();
 
-	/* IMU 初始化 + 校准（阻塞 ~600ms） */
-	if (!IMU_Init()) {
-		/* IMU 失败：LED 闪烁提示（PB9 未用，用 OLED 显示） */
-		OLED_ShowString(1, 1, "IMU ERR");
-		while (1);
-	}
+	/* JY61P 串口初始化，失败则无陀螺仪阻尼 */
+	uint8_t imu_ok = JY61P_Init();
+	if (!imu_ok)
+		OLED_ShowString(1, 1, "IMU OFF");
 
 	/* TIM2 1ms */
 	RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM2, ENABLE);
@@ -150,12 +149,12 @@ int main(void)
 	/* 循迹 PID */
 	TrackPID track_pid;
 	TrackPID_Init(&track_pid, TRACK_KP, TRACK_KI, 0.0f,
-	              DIFF_MIN, DIFF_MAX, I_MAX, I_SEP);
+	              -TRACK_OUT_MAX, TRACK_OUT_MAX, I_MAX, I_SEP);
 
-	/* PB0 模式按钮（IPU） */
+	/* PB0 模式键 + PB1 启动键（IPU） */
 	GPIO_InitTypeDef GPIO_InitStructure2;
 	GPIO_InitStructure2.GPIO_Mode = GPIO_Mode_IPU;
-	GPIO_InitStructure2.GPIO_Pin = GPIO_Pin_0;
+	GPIO_InitStructure2.GPIO_Pin = GPIO_Pin_0 | GPIO_Pin_1;
 	GPIO_InitStructure2.GPIO_Speed = GPIO_Speed_50MHz;
 	GPIO_Init(GPIOB, &GPIO_InitStructure2);
 
@@ -177,8 +176,8 @@ int main(void)
 		/* 丢线检测 */
 		static uint8_t lost_cnt = 0;
 
-		uint16_t bs = 450;
-		uint16_t step = 4;
+		uint16_t bs = 300;
+		uint16_t step = 80;	/* gulaoshi 4000/s 斜坡等效（20ms 循环） */
 
 		/* 编码器速度更新 */
 		Encoder_Update();
@@ -186,10 +185,14 @@ int main(void)
 		/* 陀螺仪读取（带容错） */
 		float omega_z = 0.0f;
 		static float last_valid_omega = 0.0f;
-		if (IMU_ReadGyroZ(&omega_z))
+		static uint8_t g_imu_ok = 0;
+		if (JY61P_GetWz(&omega_z)) {
 			last_valid_omega = omega_z;
-		else
+			g_imu_ok = 1;
+		} else {
 			omega_z = last_valid_omega;
+			g_imu_ok = 0;
+		}
 
 		switch (state)
 		{
@@ -202,8 +205,8 @@ int main(void)
 					ramp_speed = bs;
 
 				float error = Tracking_GetError();
-				float diff = TrackPID_Update(&track_pid, error);
-				diff += GYRO_D_GAIN * omega_z;
+				float diff = -TrackPID_Update(&track_pid, error);	/* 差速取反：修正转向方向（位序/电机接反） */
+				diff -= GYRO_D_GAIN * omega_z;	/* 阻尼：JY61P 顺时针为正，实测须取反才构成抑制 */
 				if (diff > DIFF_MAX) diff = DIFF_MAX;
 				if (diff < DIFF_MIN) diff = DIFF_MIN;
 
@@ -237,6 +240,22 @@ int main(void)
 				OLED_ShowNum(1, 3, g_elapsed_ms / 1000, 4);
 				OLED_ShowString(1, 7, "s");
 
+				/* 陀螺仪角速度（dps） */
+				OLED_ShowString(1, 9, "W:");
+				OLED_ShowSignedNum(1, 11, (int32_t)omega_z, 4);
+				OLED_ShowString(1, 15, g_imu_ok ? "OK" : "ER");
+
+				/* 左右轮速（编码器 20ms 增量） */
+				OLED_ShowString(2, 9, "L:");
+				OLED_ShowSignedNum(2, 11, (int32_t)Encoder_GetSpeedLeft(), 4);
+				OLED_ShowString(3, 9, "R:");
+				OLED_ShowSignedNum(3, 11, (int32_t)Encoder_GetSpeedRight(), 4);
+
+				/* 循迹传感器值（黑线=0）+ 读状态 */
+				OLED_ShowString(4, 1, "LT:");
+				OLED_ShowBinNum(4, 4, g_lt_raw, 8);
+				OLED_ShowString(4, 13, g_lt_ok ? "OK" : "ER");
+
 				if (ramp_speed >= bs)
 					state = STATE_RUN;
 			}
@@ -262,7 +281,7 @@ int main(void)
 				pb0_prev = pb0_now;
 			}
 
-			if (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_15) == 0)
+			if (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_1) == 0)
 			{
 				pidSetpoint = 0;
 				PID_SetMode(&pid, _PID_MODE_AUTOMATIC);
@@ -324,9 +343,25 @@ int main(void)
 				OLED_ShowNum(1, 3, g_elapsed_ms / 1000, 4);
 				OLED_ShowString(1, 7, "s");
 
+				/* 陀螺仪角速度（dps） */
+				OLED_ShowString(1, 9, "W:");
+				OLED_ShowSignedNum(1, 11, (int32_t)omega_z, 4);
+				OLED_ShowString(1, 15, g_imu_ok ? "OK" : "ER");
+
+				/* 左右轮速（编码器 20ms 增量） */
+				OLED_ShowString(2, 9, "L:");
+				OLED_ShowSignedNum(2, 11, (int32_t)Encoder_GetSpeedLeft(), 4);
+				OLED_ShowString(3, 9, "R:");
+				OLED_ShowSignedNum(3, 11, (int32_t)Encoder_GetSpeedRight(), 4);
+
+				/* 循迹传感器值（黑线=0）+ 读状态 */
+				OLED_ShowString(4, 1, "LT:");
+				OLED_ShowBinNum(4, 4, g_lt_raw, 8);
+				OLED_ShowString(4, 13, g_lt_ok ? "OK" : "ER");
+
 				float error = Tracking_GetError();
-				float diff = TrackPID_Update(&track_pid, error);
-				diff += GYRO_D_GAIN * omega_z;
+				float diff = -TrackPID_Update(&track_pid, error);	/* 差速取反：修正转向方向（位序/电机接反） */
+				diff -= GYRO_D_GAIN * omega_z;	/* 阻尼：JY61P 顺时针为正，实测须取反才构成抑制 */
 				if (diff > DIFF_MAX) diff = DIFF_MAX;
 				if (diff < DIFF_MIN) diff = DIFF_MIN;
 
@@ -374,9 +409,25 @@ int main(void)
 				OLED_ShowNum(1, 3, g_elapsed_ms / 1000, 4);
 				OLED_ShowString(1, 7, "s");
 
+				/* 陀螺仪角速度（dps） */
+				OLED_ShowString(1, 9, "W:");
+				OLED_ShowSignedNum(1, 11, (int32_t)omega_z, 4);
+				OLED_ShowString(1, 15, g_imu_ok ? "OK" : "ER");
+
+				/* 左右轮速（编码器 20ms 增量） */
+				OLED_ShowString(2, 9, "L:");
+				OLED_ShowSignedNum(2, 11, (int32_t)Encoder_GetSpeedLeft(), 4);
+				OLED_ShowString(3, 9, "R:");
+				OLED_ShowSignedNum(3, 11, (int32_t)Encoder_GetSpeedRight(), 4);
+
+				/* 循迹传感器值（黑线=0）+ 读状态 */
+				OLED_ShowString(4, 1, "LT:");
+				OLED_ShowBinNum(4, 4, g_lt_raw, 8);
+				OLED_ShowString(4, 13, g_lt_ok ? "OK" : "ER");
+
 				float error = Tracking_GetError();
-				float diff = TrackPID_Update(&track_pid, error);
-				diff += GYRO_D_GAIN * omega_z;
+				float diff = -TrackPID_Update(&track_pid, error);	/* 差速取反：修正转向方向（位序/电机接反） */
+				diff -= GYRO_D_GAIN * omega_z;	/* 阻尼：JY61P 顺时针为正，实测须取反才构成抑制 */
 				if (diff > DIFF_MAX) diff = DIFF_MAX;
 				if (diff < DIFF_MIN) diff = DIFF_MIN;
 
@@ -442,9 +493,25 @@ int main(void)
 				OLED_ShowNum(1, 3, g_elapsed_ms / 1000, 4);
 				OLED_ShowString(1, 7, "s");
 
+				/* 陀螺仪角速度（dps） */
+				OLED_ShowString(1, 9, "W:");
+				OLED_ShowSignedNum(1, 11, (int32_t)omega_z, 4);
+				OLED_ShowString(1, 15, g_imu_ok ? "OK" : "ER");
+
+				/* 左右轮速（编码器 20ms 增量） */
+				OLED_ShowString(2, 9, "L:");
+				OLED_ShowSignedNum(2, 11, (int32_t)Encoder_GetSpeedLeft(), 4);
+				OLED_ShowString(3, 9, "R:");
+				OLED_ShowSignedNum(3, 11, (int32_t)Encoder_GetSpeedRight(), 4);
+
+				/* 循迹传感器值（黑线=0）+ 读状态 */
+				OLED_ShowString(4, 1, "LT:");
+				OLED_ShowBinNum(4, 4, g_lt_raw, 8);
+				OLED_ShowString(4, 13, g_lt_ok ? "OK" : "ER");
+
 				float error = Tracking_GetError();
-				float diff = TrackPID_Update(&track_pid, error);
-				diff += GYRO_D_GAIN * omega_z;
+				float diff = -TrackPID_Update(&track_pid, error);	/* 差速取反：修正转向方向（位序/电机接反） */
+				diff -= GYRO_D_GAIN * omega_z;	/* 阻尼：JY61P 顺时针为正，实测须取反才构成抑制 */
 				if (diff > DIFF_MAX) diff = DIFF_MAX;
 				if (diff < DIFF_MIN) diff = DIFF_MIN;
 
@@ -549,8 +616,8 @@ int main(void)
 					ramp_speed = 0;
 
 				float error = Tracking_GetError();
-				float diff = TrackPID_Update(&track_pid, error);
-				diff += GYRO_D_GAIN * omega_z;
+				float diff = -TrackPID_Update(&track_pid, error);	/* 差速取反：修正转向方向（位序/电机接反） */
+				diff -= GYRO_D_GAIN * omega_z;	/* 阻尼：JY61P 顺时针为正，实测须取反才构成抑制 */
 				if (diff > DIFF_MAX) diff = DIFF_MAX;
 				if (diff < DIFF_MIN) diff = DIFF_MIN;
 
@@ -573,6 +640,22 @@ int main(void)
 				OLED_ShowNum(1, 3, g_elapsed_ms / 1000, 4);
 				OLED_ShowString(1, 7, "s");
 
+				/* 陀螺仪角速度（dps） */
+				OLED_ShowString(1, 9, "W:");
+				OLED_ShowSignedNum(1, 11, (int32_t)omega_z, 4);
+				OLED_ShowString(1, 15, g_imu_ok ? "OK" : "ER");
+
+				/* 左右轮速（编码器 20ms 增量） */
+				OLED_ShowString(2, 9, "L:");
+				OLED_ShowSignedNum(2, 11, (int32_t)Encoder_GetSpeedLeft(), 4);
+				OLED_ShowString(3, 9, "R:");
+				OLED_ShowSignedNum(3, 11, (int32_t)Encoder_GetSpeedRight(), 4);
+
+				/* 循迹传感器值（黑线=0）+ 读状态 */
+				OLED_ShowString(4, 1, "LT:");
+				OLED_ShowBinNum(4, 4, g_lt_raw, 8);
+				OLED_ShowString(4, 13, g_lt_ok ? "OK" : "ER");
+
 				if (ramp_speed == 0)
 				{
 					OLED_Clear();
@@ -585,11 +668,12 @@ int main(void)
 			break;
 
 		case STATE_DONE:
+			Motor_Stop();	/* 清残留差速，防止原地打转 */
 			pidInput = (double)UART_GetBallPosition();
 			PID_Compute(&pid);
 			Stepper_SetTarget((int32_t)pidOutput);
 
-			if (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_15) == 0)
+			if (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_1) == 0)
 			{
 				TrackPID_Reset(&track_pid);
 				OLED_Clear();

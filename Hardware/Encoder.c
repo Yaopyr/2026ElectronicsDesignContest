@@ -12,7 +12,7 @@ void Encoder_Init(void)
 	RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM3, ENABLE);
 
 	GPIO_InitTypeDef GPIO_InitStructure;
-	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IN_FLOATING;
+	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IPU;
 	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
 	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_6 | GPIO_Pin_7;
 	GPIO_Init(GPIOA, &GPIO_InitStructure);
@@ -22,9 +22,11 @@ void Encoder_Init(void)
 	TIM_SetAutoreload(TIM3, 0xFFFF);
 	TIM_Cmd(TIM3, ENABLE);
 
-	/* 左编码器 TIM4 (PD12=CH1, PD13=CH2) */
+	/* 左编码器 TIM4 (PD12=CH1, PD13=CH2)，需重映射（默认 PB6/PB7） */
 	RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOD, ENABLE);
 	RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM4, ENABLE);
+	RCC_APB2PeriphClockCmd(RCC_APB2Periph_AFIO, ENABLE);
+	GPIO_PinRemapConfig(GPIO_Remap_TIM4, ENABLE);
 
 	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_12 | GPIO_Pin_13;
 	GPIO_Init(GPIOD, &GPIO_InitStructure);

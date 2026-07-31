@@ -12,6 +12,7 @@ static const float sensor_pos[8] = {
 
 volatile uint8_t g_lt_raw  = 0;
 volatile float  g_lt_error = 0.0f;
+volatile uint8_t g_lt_ok   = 0;	/* 最近一次I2C读成功标志 */
 static float last_error = 0.0f;
 
 /* ---- I2C2 硬件驱动（PB10=SCL, PB11=SDA） ---- */
@@ -33,7 +34,7 @@ static void I2C2_InitPins(void)
 	I2C_InitStructure.I2C_OwnAddress1 = 0x00;
 	I2C_InitStructure.I2C_Ack = I2C_Ack_Enable;
 	I2C_InitStructure.I2C_AcknowledgedAddress = I2C_AcknowledgedAddress_7bit;
-	I2C_InitStructure.I2C_ClockSpeed = 400000;
+	I2C_InitStructure.I2C_ClockSpeed = 100000;
 	I2C_Init(I2C2, &I2C_InitStructure);
 	I2C_Cmd(I2C2, ENABLE);
 }
@@ -46,35 +47,35 @@ static uint8_t I2C2_ReadByte(uint8_t *val)
 	I2C_GenerateSTART(I2C2, ENABLE);
 	timeout = 10000;
 	while (!I2C_CheckEvent(I2C2, I2C_EVENT_MASTER_MODE_SELECT)) {
-		if (--timeout == 0) return 0;
+		if (--timeout == 0) { I2C_GenerateSTOP(I2C2, ENABLE); I2C_ClearFlag(I2C2, I2C_FLAG_AF | I2C_FLAG_BERR | I2C_FLAG_ARLO); return 0; }
 	}
 	I2C_Send7bitAddress(I2C2, LT_WRITE, I2C_Direction_Transmitter);
 	timeout = 10000;
 	while (!I2C_CheckEvent(I2C2, I2C_EVENT_MASTER_TRANSMITTER_MODE_SELECTED)) {
-		if (--timeout == 0) return 0;
+		if (--timeout == 0) { I2C_GenerateSTOP(I2C2, ENABLE); I2C_ClearFlag(I2C2, I2C_FLAG_AF | I2C_FLAG_BERR | I2C_FLAG_ARLO); return 0; }
 	}
 	I2C_SendData(I2C2, LT_CMD_DIGITAL);
 	timeout = 10000;
 	while (!I2C_CheckEvent(I2C2, I2C_EVENT_MASTER_BYTE_TRANSMITTED)) {
-		if (--timeout == 0) return 0;
+		if (--timeout == 0) { I2C_GenerateSTOP(I2C2, ENABLE); I2C_ClearFlag(I2C2, I2C_FLAG_AF | I2C_FLAG_BERR | I2C_FLAG_ARLO); return 0; }
 	}
 
 	/* 重复起始 + 读 1 字节 */
 	I2C_GenerateSTART(I2C2, ENABLE);
 	timeout = 10000;
 	while (!I2C_CheckEvent(I2C2, I2C_EVENT_MASTER_MODE_SELECT)) {
-		if (--timeout == 0) return 0;
+		if (--timeout == 0) { I2C_GenerateSTOP(I2C2, ENABLE); I2C_ClearFlag(I2C2, I2C_FLAG_AF | I2C_FLAG_BERR | I2C_FLAG_ARLO); return 0; }
 	}
 	I2C_Send7bitAddress(I2C2, LT_READ, I2C_Direction_Receiver);
 	timeout = 10000;
 	while (!I2C_CheckEvent(I2C2, I2C_EVENT_MASTER_RECEIVER_MODE_SELECTED)) {
-		if (--timeout == 0) return 0;
+		if (--timeout == 0) { I2C_GenerateSTOP(I2C2, ENABLE); I2C_ClearFlag(I2C2, I2C_FLAG_AF | I2C_FLAG_BERR | I2C_FLAG_ARLO); return 0; }
 	}
 
 	I2C_AcknowledgeConfig(I2C2, DISABLE);
 	timeout = 10000;
 	while (!I2C_CheckEvent(I2C2, I2C_EVENT_MASTER_BYTE_RECEIVED)) {
-		if (--timeout == 0) { I2C_AcknowledgeConfig(I2C2, ENABLE); return 0; }
+		if (--timeout == 0) { I2C_AcknowledgeConfig(I2C2, ENABLE); I2C_ClearFlag(I2C2, I2C_FLAG_AF | I2C_FLAG_BERR | I2C_FLAG_ARLO); return 0; }
 	}
 	*val = I2C_ReceiveData(I2C2);
 
@@ -91,7 +92,7 @@ void Tracking_Init(void)
 	GPIO_PinRemapConfig(GPIO_Remap_SWJ_JTAGDisable, ENABLE);
 
 	I2C2_InitPins();
-	Delay_ms(10);
+	Delay_ms(100);	/* 等传感器模块上电就绪 */
 
 	/* 启动传感器数字模式 */
 	I2C_GenerateSTART(I2C2, ENABLE);
@@ -115,8 +116,12 @@ void Tracking_Init(void)
 uint8_t Tracking_Read(void)
 {
 	uint8_t raw;
-	if (!I2C2_ReadByte(&raw))
+	if (!I2C2_ReadByte(&raw)) {
+		g_lt_ok = 0;
+		g_lt_raw = 0xFF;	/* 读失败按全丢线处理，触发急停保护 */
 		return 0x00;
+	}
+	g_lt_ok = 1;
 	g_lt_raw = raw;
 	return ~raw;  /* 反相：bit=1 表示黑线，兼容旧接口 */
 }
@@ -135,8 +140,12 @@ uint8_t Tracking_GetBlackCount(void)
 float Tracking_GetError(void)
 {
 	uint8_t raw;
-	if (!I2C2_ReadByte(&raw))
+	if (!I2C2_ReadByte(&raw)) {
+		g_lt_ok = 0;
+		g_lt_raw = 0xFF;	/* 读失败按全丢线处理，触发急停保护 */
 		return last_error;
+	}
+	g_lt_ok = 1;
 	g_lt_raw = raw;
 
 	float sum = 0.0f;

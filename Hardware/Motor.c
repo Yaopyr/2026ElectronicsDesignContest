@@ -25,6 +25,7 @@ void Motor_Init(void)
 	RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA, ENABLE);
 	RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB, ENABLE);
 	RCC_APB2PeriphClockCmd(RCC_APB2Periph_TIM1, ENABLE);
+	RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM5, ENABLE);	// 左轮PWM: TIM5_CH1 (PA0)
 
 	/* 方向引脚 + STBY 推挽输出 */
 	GPIO_InitTypeDef GPIO_InitStructure;
@@ -46,9 +47,9 @@ void Motor_Init(void)
 	GPIO_InitStructure.GPIO_Pin = STBY_PIN;
 	GPIO_Init(STBY_PORT, &GPIO_InitStructure);
 
-	/* PWM引脚 PA8(TIM1_CH1) + PA11(TIM1_CH4) 复用推挽输出 */
+	/* PWM引脚 PA0(TIM5_CH1) + PA11(TIM1_CH4) 复用推挽输出 */
 	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF_PP;
-	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_8 | GPIO_Pin_11;
+	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_0 | GPIO_Pin_11;
 	GPIO_Init(GPIOA, &GPIO_InitStructure);
 
 	/* TIM1 时基 */
@@ -59,21 +60,30 @@ void Motor_Init(void)
 	TIM_TimeBaseStructure.TIM_CounterMode = TIM_CounterMode_Up;
 	TIM_TimeBaseInit(TIM1, &TIM_TimeBaseStructure);
 
-	/* TIM1_CH1 PWM 输出 */
+	/* TIM5 时基（左轮PWM，与TIM1同参数） */
+	TIM_TimeBaseInit(TIM5, &TIM_TimeBaseStructure);
+
+	/* PWM 输出初始化 */
 	TIM_OCInitTypeDef TIM_OCInitStructure;
 	TIM_OCInitStructure.TIM_OCMode = TIM_OCMode_PWM1;
 	TIM_OCInitStructure.TIM_OutputState = TIM_OutputState_Enable;
 	TIM_OCInitStructure.TIM_Pulse = 0;
 	TIM_OCInitStructure.TIM_OCPolarity = TIM_OCPolarity_High;
-	TIM_OC1Init(TIM1, &TIM_OCInitStructure);
 
-	/* TIM1_CH4 PWM 输出 */
+	/* 左轮 PWM: TIM5_CH1 (PA0) */
+	TIM_OC1Init(TIM5, &TIM_OCInitStructure);
+
+	/* 右轮 PWM: TIM1_CH4 (PA11) */
 	TIM_OC4Init(TIM1, &TIM_OCInitStructure);
 
 	/* TIM1 主输出使能 + 自动重载预装载 */
 	TIM_CtrlPWMOutputs(TIM1, ENABLE);
 	TIM_ARRPreloadConfig(TIM1, ENABLE);
 	TIM_Cmd(TIM1, ENABLE);
+
+	/* TIM5 自动重载预装载 + 使能（通用定时器无需主输出使能） */
+	TIM_ARRPreloadConfig(TIM5, ENABLE);
+	TIM_Cmd(TIM5, ENABLE);
 
 	/* 初始状态：STBY拉高使能，电机停转 */
 	GPIO_SetBits(STBY_PORT, STBY_PIN);
@@ -98,19 +108,19 @@ void Motor_SetLeft(int16_t speed)
 	{
 		GPIO_SetBits(AIN1_PORT, AIN1_PIN);
 		GPIO_ResetBits(AIN2_PORT, AIN2_PIN);
-		TIM_SetCompare1(TIM1, speed);
+		TIM_SetCompare1(TIM5, speed);
 	}
 	else if (speed < 0)
 	{
 		GPIO_ResetBits(AIN1_PORT, AIN1_PIN);
 		GPIO_SetBits(AIN2_PORT, AIN2_PIN);
-		TIM_SetCompare1(TIM1, -speed);
+		TIM_SetCompare1(TIM5, -speed);
 	}
 	else
 	{
 		GPIO_ResetBits(AIN1_PORT, AIN1_PIN);
 		GPIO_ResetBits(AIN2_PORT, AIN2_PIN);
-		TIM_SetCompare1(TIM1, 0);
+		TIM_SetCompare1(TIM5, 0);
 	}
 }
 
@@ -152,7 +162,7 @@ void Motor_SetRight(int16_t speed)
 void Motor_Stop(void)
 {
 	/* 仅关PWM，保留方向引脚原状态，最大程度滑行 */
-	TIM_SetCompare1(TIM1, 0);
+	TIM_SetCompare1(TIM5, 0);
 	TIM_SetCompare4(TIM1, 0);
 }
 

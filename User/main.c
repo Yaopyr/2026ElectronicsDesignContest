@@ -10,9 +10,9 @@
 
 #define POWER		2
 
-#define PID_KP		1.2//1.6//0.8//0.2
-#define PID_KI		0.1//0.04//0.01//0.015//0.02
-#define PID_KD		0.3//0.25//0.025//0.02//0.015//0.008
+#define PID_KP		1.3//1.6//0.8//0.2
+#define PID_KI		0.15//0.04//0.01//0.015//0.02
+#define PID_KD		0.35//0.25//0.025//0.02//0.015//0.008
 
 volatile uint32_t g_elapsed_ms;
 
@@ -88,14 +88,14 @@ int main(void)
 
 		uint16_t bs, md;
 		if (mode == MODE_02) { bs = 260; md = 85; }
-		else                 { bs = 200; md = 75;  }
+		else                 { bs = 220; md = 80;  }
 
 		switch (state)
 		{
 		case STATE_ACCEL:
 			if (mode == MODE_03) { state = STATE_RUN; break; }
 			{
-				uint16_t step = (bs >= 200) ? 5 : 3;
+				uint16_t step = (bs >= 200) ? 2 : 1;
 				if (ramp_speed + step < bs)
 					ramp_speed += step;
 				else

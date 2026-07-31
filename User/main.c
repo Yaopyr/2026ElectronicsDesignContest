@@ -18,6 +18,7 @@ volatile uint32_t g_elapsed_ms;
 
 typedef enum {
 	STATE_WAIT,
+	STATE_ACCEL,
 	STATE_RUN,
 	STATE_DECEL,
 	STATE_DONE
@@ -82,11 +83,36 @@ int main(void)
 		int16_t pos_sum;
 		uint8_t cnt;
 		static uint8_t pb0_prev = 1;
-		static int16_t decel_speed = 0;
+		static int16_t ramp_speed = 0;
 	static uint32_t decel_time = 0;
+
+		uint16_t bs, md;
+		if (mode == MODE_02) { bs = 260; md = 85; }
+		else                 { bs = 200; md = 75;  }
 
 		switch (state)
 		{
+		case STATE_ACCEL:
+			{
+				uint16_t step = (bs >= 200) ? 5 : 3;
+				if (ramp_speed + step < bs)
+					ramp_speed += step;
+				else
+					ramp_speed = bs;
+				Motor_SetLeft( ramp_speed);
+				Motor_SetRight(ramp_speed);
+				/* 平衡球 */
+				pidInput = (double)UART_GetBallPosition();
+				PID_Compute(&pid);
+				Stepper_SetTarget((int32_t)pidOutput);
+				OLED_ShowString(1, 1, "T:");
+				OLED_ShowNum(1, 3, g_elapsed_ms / 1000, 4);
+				OLED_ShowString(1, 7, "s");
+				if (ramp_speed >= bs)
+					state = STATE_RUN;
+			}
+			break;
+
 		case STATE_WAIT:
 			/* 平衡球 */
 			pidInput = (double)UART_GetBallPosition();
@@ -116,22 +142,18 @@ int main(void)
 				PID_SetMode(&pid, _PID_MODE_AUTOMATIC);
 				OLED_Clear();
 				g_elapsed_ms = 0;
-				state = STATE_RUN;
+				ramp_speed = 0;
+				state = STATE_ACCEL;
 			}
 			break;
 
 		case STATE_RUN:
-		{
-			uint16_t bs, md;
-			if (mode == MODE_02) { bs = 260; md = 85; }
-			else                 { bs = 200; md = 70;  }
-
 			if (mode == MODE_02)
 			{
 				/* 停止条件 */
 				if (Tracking_GetBlackCount() >= 3 && g_elapsed_ms >= 18000)
 				{
-					decel_speed = bs;
+					ramp_speed = bs;
 					decel_time = g_elapsed_ms;
 					state = STATE_DECEL;
 					break;
@@ -185,11 +207,11 @@ int main(void)
 				OLED_ShowString(3, 1, "T:");
 				OLED_ShowSignedNum(3, 3, (int32_t)pidOutput, 4);
 			}
-			else if (mode == MODE_04) /* 循迹3秒停止 */
+			else if (mode == MODE_04) /* 循迹7秒停止 */
 			{
-				if (g_elapsed_ms >= 6000)
+				if (g_elapsed_ms >= 7000)
 				{
-					decel_speed = bs;
+					ramp_speed = bs;
 					decel_time = g_elapsed_ms;
 					state = STATE_DECEL;
 					break;
@@ -247,7 +269,7 @@ int main(void)
 			{
 				if (Tracking_GetBlackCount() >= 3 && g_elapsed_ms >= 17000)
 				{
-					decel_speed = bs;
+					ramp_speed = bs;
 					decel_time = g_elapsed_ms;
 					state = STATE_DECEL;
 					break;
@@ -374,18 +396,17 @@ int main(void)
 				OLED_ShowString(4, 7, "s");
 			}
 			break;
-			}
 
 		case STATE_DECEL:
 			{
-				uint16_t step = (decel_speed >= 200) ? 5 : 3;
-				if (decel_speed > step)
-					decel_speed -= step;
+				uint16_t step = (ramp_speed >= 200) ? 5 : 3;
+				if (ramp_speed > step)
+					ramp_speed -= step;
 				else
-					decel_speed = 0;
+					ramp_speed = 0;
 
-				Motor_SetLeft( decel_speed);
-				Motor_SetRight(decel_speed);
+				Motor_SetLeft( ramp_speed);
+				Motor_SetRight(ramp_speed);
 
 				/* 平衡球 */
 				pidInput = (double)UART_GetBallPosition();
@@ -396,7 +417,7 @@ int main(void)
 				OLED_ShowNum(1, 3, g_elapsed_ms / 1000, 4);
 				OLED_ShowString(1, 7, "s");
 
-				if (decel_speed == 0)
+				if (ramp_speed == 0)
 				{
 					OLED_Clear();
 					OLED_ShowString(1, 1, "Time:");
@@ -418,7 +439,8 @@ int main(void)
 			{
 				OLED_Clear();
 				g_elapsed_ms = 0;
-				state = STATE_RUN;
+				ramp_speed = 0;
+				state = STATE_ACCEL;
 			}
 			break;
 		}

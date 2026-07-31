@@ -11,16 +11,16 @@
 #include "pid.h"
 
 /* 球平衡 PID */
-#define PID_KP		1.3
+#define PID_KP		1.2
 #define PID_KI		0.15
 #define PID_KD		0.35
 
 /* 循迹 PID（来自 gulaoshi track_ctrl.c） */
-#define TRACK_KP      40.0f
+#define TRACK_KP      30.0f//40.0f//30.0f//15.0f//25.0f	/* 小误差修正温和（直道）；弯道误差大走饱和区不受影响 */
 #define TRACK_KI      0.3f
-#define GYRO_D_GAIN   15.0f//10.0f	/* 折中：直道压蛇形、弯道少对抗转向 */
-#define DIFF_MAX      250.0f
-#define DIFF_MIN     -250.0f
+#define GYRO_D_GAIN   15.0f//20.0f//15.0f//10.0f	/* 折中：直道压蛇形、弯道少对抗转向 */
+#define DIFF_MAX      200.0f//150.0f//250.0f
+#define DIFF_MIN     -200.0f//-150.0f//-250.0f
 #define I_MAX         80.0f
 #define I_SEP         15.0f
 #define TRACK_OUT_MAX 1000.0f	/* PID 内部限幅（gulaoshi 双级限幅） */

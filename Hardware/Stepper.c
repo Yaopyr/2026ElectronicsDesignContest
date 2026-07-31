@@ -1,12 +1,10 @@
 #include "Stepper.h"
 
-/* 引脚：PB8=STEP, PB9=DIR, PB0=ENABLE */
+/* 引脚：PB8=STEP, PB9=DIR */
 #define STEP_PORT	GPIOB
 #define STEP_PIN	GPIO_Pin_8
 #define DIR_PORT	GPIOB
 #define DIR_PIN		GPIO_Pin_9
-#define EN_PORT		GPIOB
-#define EN_PIN		GPIO_Pin_0
 
 volatile int32_t g_step_target  = 0;	// 目标位置（步数）
 volatile int32_t g_step_current = 0;	// 当前位置
@@ -24,13 +22,12 @@ void Stepper_Init(void)
 	GPIO_InitTypeDef GPIO_InitStructure;
 	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;
 	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
-	GPIO_InitStructure.GPIO_Pin = STEP_PIN | DIR_PIN | EN_PIN;
+	GPIO_InitStructure.GPIO_Pin = STEP_PIN | DIR_PIN;
 	GPIO_Init(GPIOB, &GPIO_InitStructure);
 
 	/* 初始状态 */
 	GPIO_ResetBits(STEP_PORT, STEP_PIN);
 	GPIO_ResetBits(DIR_PORT, DIR_PIN);
-	GPIO_ResetBits(EN_PORT, EN_PIN);	// ENABLE 低有效，拉低使能
 
 	/* TIM4 时基：72MHz / 72 = 1MHz, 周期100 → 10kHz (100µs) */
 	TIM_TimeBaseInitTypeDef TIM_TimeBaseStructure;

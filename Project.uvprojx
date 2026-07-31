@@ -716,6 +716,26 @@
               <FilePath>.\Hardware\Tracking.h</FilePath>
             </File>
             <File>
+              <FileName>Encoder.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\Hardware\Encoder.c</FilePath>
+            </File>
+            <File>
+              <FileName>Encoder.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\Hardware\Encoder.h</FilePath>
+            </File>
+            <File>
+              <FileName>IMU.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\Hardware\IMU.c</FilePath>
+            </File>
+            <File>
+              <FileName>IMU.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\Hardware\IMU.h</FilePath>
+            </File>
+            <File>
               <FileName>Motor.c</FileName>
               <FileType>1</FileType>
               <FilePath>.\Hardware\Motor.c</FilePath>

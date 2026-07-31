@@ -10,13 +10,13 @@ volatile int32_t g_step_target  = 0;	// 目标位置（步数）
 volatile int32_t g_step_current = 0;	// 当前位置
 
 /**
-  * @brief  步进电机初始化：GPIO + TIM4 脉冲生成
-  *          TIM4 100µs (10kHz) 中断，每 500µs 一个脉冲 → 2kHz 步频
+  * @brief  步进电机初始化：GPIO + TIM6 脉冲生成
+  *          TIM6 100µs (10kHz) 中断，每 500µs 一个脉冲 → 2kHz 步频
   */
 void Stepper_Init(void)
 {
 	RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB, ENABLE);
-	RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM4, ENABLE);
+	RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM6, ENABLE);
 
 	/* STEP/DIR/EN 推挽输出 */
 	GPIO_InitTypeDef GPIO_InitStructure;
@@ -29,24 +29,24 @@ void Stepper_Init(void)
 	GPIO_ResetBits(STEP_PORT, STEP_PIN);
 	GPIO_ResetBits(DIR_PORT, DIR_PIN);
 
-	/* TIM4 时基：72MHz / 72 = 1MHz, 周期100 → 10kHz (100µs) */
+	/* TIM6 时基：72MHz / 72 = 1MHz, 周期100 → 10kHz (100µs) */
 	TIM_TimeBaseInitTypeDef TIM_TimeBaseStructure;
 	TIM_TimeBaseStructure.TIM_Period = 100 - 1;
 	TIM_TimeBaseStructure.TIM_Prescaler = 72 - 1;
 	TIM_TimeBaseStructure.TIM_ClockDivision = TIM_CKD_DIV1;
 	TIM_TimeBaseStructure.TIM_CounterMode = TIM_CounterMode_Up;
-	TIM_TimeBaseInit(TIM4, &TIM_TimeBaseStructure);
+	TIM_TimeBaseInit(TIM6, &TIM_TimeBaseStructure);
 
-	TIM_ITConfig(TIM4, TIM_IT_Update, ENABLE);
+	TIM_ITConfig(TIM6, TIM_IT_Update, ENABLE);
 
 	NVIC_InitTypeDef NVIC_InitStructure;
-	NVIC_InitStructure.NVIC_IRQChannel = TIM4_IRQn;
+	NVIC_InitStructure.NVIC_IRQChannel = TIM6_IRQn;
 	NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 0;
 	NVIC_InitStructure.NVIC_IRQChannelSubPriority = 2;
 	NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
 	NVIC_Init(&NVIC_InitStructure);
 
-	TIM_Cmd(TIM4, ENABLE);
+	TIM_Cmd(TIM6, ENABLE);
 }
 
 void Stepper_SetTarget(int32_t steps)
@@ -58,16 +58,16 @@ void Stepper_SetTarget(int32_t steps)
 }
 
 /**
-  * @brief  TIM4 中断：步进脉冲生成（两相法）
+  * @brief  TIM6 中断：步进脉冲生成（两相法）
   *          100µs * 5 = 500µs 一个完整脉冲 → 2kHz 步频
   */
-void TIM4_IRQHandler(void)
+void TIM6_IRQHandler(void)
 {
 	static uint8_t pulse_tick = 0;
 
-	if (TIM_GetITStatus(TIM4, TIM_IT_Update) != RESET)
+	if (TIM_GetITStatus(TIM6, TIM_IT_Update) != RESET)
 	{
-		TIM_ClearITPendingBit(TIM4, TIM_IT_Update);
+		TIM_ClearITPendingBit(TIM6, TIM_IT_Update);
 
 		if (g_step_current == g_step_target)
 			return;

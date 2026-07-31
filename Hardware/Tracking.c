@@ -1,76 +1,158 @@
-#include "stm32f10x.h"
+#include "Tracking.h"
+#include "Delay.h"
 
-/**
-  * 函    数：循迹传感器初始化
-  * 参    数：无
-  * 返 回 值：无
-  * 说    明：配置8路传感器为输入上拉，PB3/PB4/PA15需禁用JTAG保留SWD
-  */
+#define LT_I2C_ADDR        0x4C
+#define LT_CMD_DIGITAL     0xDD
+#define LT_WRITE           ((LT_I2C_ADDR) << 1)
+#define LT_READ            (((LT_I2C_ADDR) << 1) | 0x01)
+
+static const float sensor_pos[8] = {
+	-42.0f, -30.0f, -18.0f, -6.0f, 6.0f, 18.0f, 30.0f, 42.0f
+};
+
+volatile uint8_t g_lt_raw  = 0;
+volatile float  g_lt_error = 0.0f;
+static float last_error = 0.0f;
+
+/* ---- I2C2 硬件驱动（PB10=SCL, PB11=SDA） ---- */
+
+static void I2C2_InitPins(void)
+{
+	RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB, ENABLE);
+	RCC_APB1PeriphClockCmd(RCC_APB1Periph_I2C2, ENABLE);
+
+	GPIO_InitTypeDef GPIO_InitStructure;
+	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF_OD;
+	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
+	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_10 | GPIO_Pin_11;
+	GPIO_Init(GPIOB, &GPIO_InitStructure);
+
+	I2C_InitTypeDef I2C_InitStructure;
+	I2C_InitStructure.I2C_Mode = I2C_Mode_I2C;
+	I2C_InitStructure.I2C_DutyCycle = I2C_DutyCycle_2;
+	I2C_InitStructure.I2C_OwnAddress1 = 0x00;
+	I2C_InitStructure.I2C_Ack = I2C_Ack_Enable;
+	I2C_InitStructure.I2C_AcknowledgedAddress = I2C_AcknowledgedAddress_7bit;
+	I2C_InitStructure.I2C_ClockSpeed = 400000;
+	I2C_Init(I2C2, &I2C_InitStructure);
+	I2C_Cmd(I2C2, ENABLE);
+}
+
+static uint8_t I2C2_ReadByte(uint8_t *val)
+{
+	uint32_t timeout;
+
+	/* 写命令 0xDD */
+	I2C_GenerateSTART(I2C2, ENABLE);
+	timeout = 10000;
+	while (!I2C_CheckEvent(I2C2, I2C_EVENT_MASTER_MODE_SELECT)) {
+		if (--timeout == 0) return 0;
+	}
+	I2C_Send7bitAddress(I2C2, LT_WRITE, I2C_Direction_Transmitter);
+	timeout = 10000;
+	while (!I2C_CheckEvent(I2C2, I2C_EVENT_MASTER_TRANSMITTER_MODE_SELECTED)) {
+		if (--timeout == 0) return 0;
+	}
+	I2C_SendData(I2C2, LT_CMD_DIGITAL);
+	timeout = 10000;
+	while (!I2C_CheckEvent(I2C2, I2C_EVENT_MASTER_BYTE_TRANSMITTED)) {
+		if (--timeout == 0) return 0;
+	}
+
+	/* 重复起始 + 读 1 字节 */
+	I2C_GenerateSTART(I2C2, ENABLE);
+	timeout = 10000;
+	while (!I2C_CheckEvent(I2C2, I2C_EVENT_MASTER_MODE_SELECT)) {
+		if (--timeout == 0) return 0;
+	}
+	I2C_Send7bitAddress(I2C2, LT_READ, I2C_Direction_Receiver);
+	timeout = 10000;
+	while (!I2C_CheckEvent(I2C2, I2C_EVENT_MASTER_RECEIVER_MODE_SELECTED)) {
+		if (--timeout == 0) return 0;
+	}
+
+	I2C_AcknowledgeConfig(I2C2, DISABLE);
+	timeout = 10000;
+	while (!I2C_CheckEvent(I2C2, I2C_EVENT_MASTER_BYTE_RECEIVED)) {
+		if (--timeout == 0) { I2C_AcknowledgeConfig(I2C2, ENABLE); return 0; }
+	}
+	*val = I2C_ReceiveData(I2C2);
+
+	I2C_GenerateSTOP(I2C2, ENABLE);
+	I2C_AcknowledgeConfig(I2C2, ENABLE);
+	return 1;
+}
+
+/* ---- 公开接口 ---- */
+
 void Tracking_Init(void)
 {
-	/* 禁用JTAG，保留SWD（释放PB3、PB4、PA15）*/
 	RCC_APB2PeriphClockCmd(RCC_APB2Periph_AFIO, ENABLE);
 	GPIO_PinRemapConfig(GPIO_Remap_SWJ_JTAGDisable, ENABLE);
 
-	/* 开启GPIO时钟 */
-	RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA, ENABLE);
-	RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB, ENABLE);
+	I2C2_InitPins();
+	Delay_ms(10);
 
-	/* GPIOA输入：PA5(S0)、PA3(S1)、PA2(S3)、PA4(S5)、PA15(S7) */
-	GPIO_InitTypeDef GPIO_InitStructure;
-	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IPU;
-	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_2 | GPIO_Pin_3 | GPIO_Pin_4 | GPIO_Pin_5 | GPIO_Pin_15;
-	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
-	GPIO_Init(GPIOA, &GPIO_InitStructure);
-
-	/* GPIOB输入：PB3(S2)、PB1(S4)、PB4(S6)、PB15(启动) */
-	GPIO_InitStructure.GPIO_Pin = GPIO_Pin_1 | GPIO_Pin_3 | GPIO_Pin_4 | GPIO_Pin_15;
-	GPIO_Init(GPIOB, &GPIO_InitStructure);
+	/* 启动传感器数字模式 */
+	I2C_GenerateSTART(I2C2, ENABLE);
+	uint32_t timeout = 10000;
+	while (!I2C_CheckEvent(I2C2, I2C_EVENT_MASTER_MODE_SELECT)) {
+		if (--timeout == 0) break;
+	}
+	I2C_Send7bitAddress(I2C2, LT_WRITE, I2C_Direction_Transmitter);
+	timeout = 10000;
+	while (!I2C_CheckEvent(I2C2, I2C_EVENT_MASTER_TRANSMITTER_MODE_SELECTED)) {
+		if (--timeout == 0) break;
+	}
+	I2C_SendData(I2C2, LT_CMD_DIGITAL);
+	timeout = 10000;
+	while (!I2C_CheckEvent(I2C2, I2C_EVENT_MASTER_BYTE_TRANSMITTED)) {
+		if (--timeout == 0) break;
+	}
+	I2C_GenerateSTOP(I2C2, ENABLE);
 }
 
-/**
-  * 函    数：读取8路传感器值
-  * 参    数：无
-  * 返 回 值：8位数据，bit0=S0, bit1=S1, ..., bit7=S7，1=检测到黑线
-  */
 uint8_t Tracking_Read(void)
 {
-	uint8_t val = 0;
-	if (GPIO_ReadInputDataBit(GPIOA, GPIO_Pin_5)  == 0) val |= 0x01;	// S0
-	if (GPIO_ReadInputDataBit(GPIOA, GPIO_Pin_3)  == 0) val |= 0x02;	// S1
-	if (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_3)  == 0) val |= 0x04;	// S2
-	if (GPIO_ReadInputDataBit(GPIOA, GPIO_Pin_2)  == 0) val |= 0x08;	// S3
-	if (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_1)  == 0) val |= 0x10;	// S4
-	if (GPIO_ReadInputDataBit(GPIOA, GPIO_Pin_4)  == 0) val |= 0x20;	// S5
-	if (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_4)  == 0) val |= 0x40;	// S6
-	if (GPIO_ReadInputDataBit(GPIOA, GPIO_Pin_15) == 0) val |= 0x80;	// S7
-	return val;
+	uint8_t raw;
+	if (!I2C2_ReadByte(&raw))
+		return 0x00;
+	g_lt_raw = raw;
+	return ~raw;  /* 反相：bit=1 表示黑线，兼容旧接口 */
 }
 
-/**
-  * 函    数：获取检测到黑线的传感器数量
-  * 参    数：无
-  * 返 回 值：黑线传感器个数（0~8）
-  */
 uint8_t Tracking_GetBlackCount(void)
 {
-	uint8_t val = Tracking_Read();
+	uint8_t raw = g_lt_raw;
 	uint8_t cnt = 0;
-	while (val)
-	{
-		cnt++;
-		val &= val - 1;
+	for (int i = 0; i < 8; i++) {
+		if (!(raw & (1 << i)))
+			cnt++;
 	}
 	return cnt;
 }
 
-/**
-  * 函    数：等待启动信号
-  * 参    数：无
-  * 返 回 值：无
-  * 说    明：阻塞等待PB15接收到低电平
-  */
-void Tracking_WaitStart(void)
+float Tracking_GetError(void)
 {
-	while (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_15) == 1);
+	uint8_t raw;
+	if (!I2C2_ReadByte(&raw))
+		return last_error;
+	g_lt_raw = raw;
+
+	float sum = 0.0f;
+	uint8_t cnt = 0;
+
+	for (int i = 0; i < 8; i++) {
+		if (!(raw & (1 << (7 - i)))) {
+			sum += sensor_pos[i];
+			cnt++;
+		}
+	}
+
+	if (cnt == 0)
+		return last_error;
+
+	last_error = sum / cnt;
+	g_lt_error = last_error;
+	return last_error;
 }

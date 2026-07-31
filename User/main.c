@@ -5,16 +5,89 @@
 #include "OLED.h"
 #include "UART.h"
 #include "Stepper.h"
+#include "Encoder.h"
+#include "IMU.h"
 
 #include "pid.h"
 
-#define POWER		2
+/* 球平衡 PID */
+#define PID_KP		1.3
+#define PID_KI		0.15
+#define PID_KD		0.35
 
-#define PID_KP		1.3//1.6//0.8//0.2
-#define PID_KI		0.15//0.04//0.01//0.015//0.02
-#define PID_KD		0.35//0.25//0.025//0.02//0.015//0.008
+/* 循迹 PID（来自 gulaoshi track_ctrl.c） */
+#define TRACK_KP      40.0f
+#define TRACK_KI      0.3f
+#define GYRO_D_GAIN   5.0f
+#define DIFF_MAX      150.0f
+#define DIFF_MIN     -150.0f
+#define I_MAX         80.0f
+#define I_SEP         15.0f
 
 volatile uint32_t g_elapsed_ms;
+
+/* ========== 循迹 PID（与 gulaoshi pid.c 算法一致） ========== */
+typedef struct {
+	float Kp, Ki, Kd;
+	float error, last_error, integral;
+	float output;
+	float out_max, out_min;
+	float i_max, i_sep;
+} TrackPID;
+
+static void TrackPID_Reset(TrackPID *pid)
+{
+	pid->error = 0.0f;
+	pid->last_error = 0.0f;
+	pid->integral = 0.0f;
+	pid->output = 0.0f;
+}
+
+static void TrackPID_Init(TrackPID *pid, float kp, float ki, float kd,
+                           float out_min, float out_max, float i_max, float i_sep)
+{
+	pid->Kp = kp;
+	pid->Ki = ki;
+	pid->Kd = kd;
+	pid->out_min = out_min;
+	pid->out_max = out_max;
+	pid->i_max = i_max;
+	pid->i_sep = i_sep;
+	TrackPID_Reset(pid);
+}
+
+static float TrackPID_Update(TrackPID *pid, float error)
+{
+	pid->error = error;
+
+	float abs_err = (pid->error > 0.0f) ? pid->error : -pid->error;
+	if (pid->i_sep <= 0.0f || abs_err <= pid->i_sep) {
+		pid->integral += pid->error;
+		if (pid->integral > pid->i_max)
+			pid->integral = pid->i_max;
+		else if (pid->integral < -pid->i_max)
+			pid->integral = -pid->i_max;
+	}
+
+	float derivative = pid->error - pid->last_error;
+	float output = pid->Kp * pid->error
+	             + pid->Ki * pid->integral
+	             + pid->Kd * derivative;
+
+	if (output > pid->out_max) {
+		output = pid->out_max;
+		if (pid->Ki != 0.0f && pid->error > 0.0f)
+			pid->integral -= pid->error;
+	} else if (output < pid->out_min) {
+		output = pid->out_min;
+		if (pid->Ki != 0.0f && pid->error < 0.0f)
+			pid->integral -= pid->error;
+	}
+
+	pid->last_error = pid->error;
+	pid->output = output;
+	return output;
+}
 
 typedef enum {
 	STATE_WAIT,
@@ -27,7 +100,7 @@ typedef enum {
 typedef enum {
 	MODE_02,	// 循迹 + 平衡球
 	MODE_03,	// 定点测试：+340 → -340
-	MODE_04,	// 循迹3秒停止
+	MODE_04,	// 循迹7秒停止
 	MODE_05		// 默认速度循迹
 } Mode_TypeDef;
 
@@ -39,6 +112,14 @@ int main(void)
 	Motor_Init();
 	UART_Init();
 	Stepper_Init();
+	Encoder_Init();
+
+	/* IMU 初始化 + 校准（阻塞 ~600ms） */
+	if (!IMU_Init()) {
+		/* IMU 失败：LED 闪烁提示（PB9 未用，用 OLED 显示） */
+		OLED_ShowString(1, 1, "IMU ERR");
+		while (1);
+	}
 
 	/* TIM2 1ms */
 	RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM2, ENABLE);
@@ -57,7 +138,7 @@ int main(void)
 	NVIC_Init(&NVIC_InitStructure);
 	TIM_Cmd(TIM2, ENABLE);
 
-	/* PID */
+	/* 球平衡 PID */
 	double pidInput = 0, pidOutput = 0, pidSetpoint = 0;
 	PID_TypeDef pid;
 	PID(&pid, &pidInput, &pidOutput, &pidSetpoint, PID_KP, PID_KI, PID_KD,
@@ -65,6 +146,11 @@ int main(void)
 	PID_SetMode(&pid, _PID_MODE_AUTOMATIC);
 	PID_SetSampleTime(&pid, 20);
 	PID_SetOutputLimits(&pid, -STEP_RANGE, STEP_RANGE);
+
+	/* 循迹 PID */
+	TrackPID track_pid;
+	TrackPID_Init(&track_pid, TRACK_KP, TRACK_KI, 0.0f,
+	              DIFF_MIN, DIFF_MAX, I_MAX, I_SEP);
 
 	/* PB0 模式按钮（IPU） */
 	GPIO_InitTypeDef GPIO_InitStructure2;
@@ -79,54 +165,70 @@ int main(void)
 
 	while (1)
 	{
-		uint8_t sensors;
-		int16_t pos_sum;
-		uint8_t cnt;
 		static uint8_t pb0_prev = 1;
 		static int16_t ramp_speed = 0;
-	static uint32_t decel_time = 0;
+		static uint32_t decel_time = 0;
 
-		uint16_t bs, md;
-		if (mode == MODE_02) { bs = 260; md = 85; }
-		else                 { bs = 220; md = 80;  }
+		/* 两阶段终点检测 */
+		static uint8_t finish_armed = 0;
+		static uint8_t finish_cnt   = 0;
+		static uint8_t leave_cnt    = 0;
+
+		/* 丢线检测 */
+		static uint8_t lost_cnt = 0;
+
+		uint16_t bs = 450;
+		uint16_t step = 4;
+
+		/* 编码器速度更新 */
+		Encoder_Update();
+
+		/* 陀螺仪读取（带容错） */
+		float omega_z = 0.0f;
+		static float last_valid_omega = 0.0f;
+		if (IMU_ReadGyroZ(&omega_z))
+			last_valid_omega = omega_z;
+		else
+			omega_z = last_valid_omega;
 
 		switch (state)
 		{
 		case STATE_ACCEL:
 			if (mode == MODE_03) { state = STATE_RUN; break; }
 			{
-				uint16_t step = (bs >= 200) ? 2 : 1;
 				if (ramp_speed + step < bs)
 					ramp_speed += step;
 				else
 					ramp_speed = bs;
-				sensors = Tracking_Read();
-				pos_sum = 0;
-				cnt = 0;
-				if (sensors & 0x01) { pos_sum -= 7; cnt++; }
-				if (sensors & 0x02) { pos_sum -= 6; cnt++; }
-				if (sensors & 0x04) { pos_sum -= 5; cnt++; }
-				if (sensors & 0x08) { pos_sum -= 2; cnt++; }
-				if (sensors & 0x10) { pos_sum += 2; cnt++; }
-				if (sensors & 0x20) { pos_sum += 5; cnt++; }
-				if (sensors & 0x40) { pos_sum += 6; cnt++; }
-				if (sensors & 0x80) { pos_sum += 7; cnt++; }
-				if (cnt > 0)
-				{
-					int16_t pos = pos_sum / cnt;
-					uint16_t abs_pos = (pos > 0) ? pos : -pos;
-					uint16_t numerator = md;
-					for (uint8_t p = 0; p < POWER; p++)
-						numerator = numerator * abs_pos / 7;
-					int16_t diff = numerator;
-					if (pos < 0) { Motor_SetLeft(ramp_speed - diff); Motor_SetRight(ramp_speed + diff); }
-					else         { Motor_SetLeft(ramp_speed + diff); Motor_SetRight(ramp_speed - diff); }
+
+				float error = Tracking_GetError();
+				float diff = TrackPID_Update(&track_pid, error);
+				diff += GYRO_D_GAIN * omega_z;
+				if (diff > DIFF_MAX) diff = DIFF_MAX;
+				if (diff < DIFF_MIN) diff = DIFF_MIN;
+
+				int16_t left  = (int16_t)ramp_speed + (int16_t)diff;
+				int16_t right = (int16_t)ramp_speed - (int16_t)diff;
+
+				if (left  > 999)  left  = 999;
+				if (left  < -999) left  = -999;
+				if (right > 999)  right = 999;
+				if (right < -999) right = -999;
+
+				Motor_SetLeft( left);
+				Motor_SetRight(right);
+
+				/* 丢线检测 */
+				if (g_lt_raw == 0xFF) {
+					if (++lost_cnt >= 5) {
+						Motor_Stop();
+						state = STATE_DONE;
+						break;
+					}
+				} else {
+					lost_cnt = 0;
 				}
-				else
-				{
-					Motor_SetLeft( ramp_speed);
-					Motor_SetRight(ramp_speed);
-				}
+
 				/* 平衡球 */
 				pidInput = (double)UART_GetBallPosition();
 				PID_Compute(&pid);
@@ -134,6 +236,7 @@ int main(void)
 				OLED_ShowString(1, 1, "T:");
 				OLED_ShowNum(1, 3, g_elapsed_ms / 1000, 4);
 				OLED_ShowString(1, 7, "s");
+
 				if (ramp_speed >= bs)
 					state = STATE_RUN;
 			}
@@ -145,7 +248,6 @@ int main(void)
 			PID_Compute(&pid);
 			Stepper_SetTarget((int32_t)pidOutput);
 
-			/* OLED：模式 + 状态 */
 			OLED_ShowString(1, 1, "M:");
 			OLED_ShowNum(1, 3, (mode == MODE_02) ? 2 : (mode == MODE_03) ? 3 : (mode == MODE_04) ? 4 : 5, 2);
 			OLED_ShowString(2, 1, "P:");
@@ -153,7 +255,6 @@ int main(void)
 			OLED_ShowString(3, 1, "T:");
 			OLED_ShowSignedNum(3, 3, (int32_t)pidOutput, 4);
 
-			/* PB0 模式切换（下降沿） */
 			{
 				uint8_t pb0_now = GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_0);
 				if (pb0_prev == 1 && pb0_now == 0)
@@ -161,15 +262,19 @@ int main(void)
 				pb0_prev = pb0_now;
 			}
 
-			/* PB15 启动 */
 			if (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_15) == 0)
 			{
 				pidSetpoint = 0;
 				PID_SetMode(&pid, _PID_MODE_AUTOMATIC);
+				TrackPID_Reset(&track_pid);
 				OLED_Clear();
 				g_elapsed_ms = 0;
 				ramp_speed = 0;
 				decel_time = 0;
+				finish_armed = 0;
+				finish_cnt = 0;
+				leave_cnt = 0;
+				lost_cnt = 0;
 				state = STATE_ACCEL;
 			}
 			break;
@@ -177,55 +282,65 @@ int main(void)
 		case STATE_RUN:
 			if (mode == MODE_02)
 			{
-				/* 停止条件 */
-					if (decel_time == 0 && Tracking_GetBlackCount() >= 3 && g_elapsed_ms >= 18000)
-						decel_time = g_elapsed_ms;
-					if (decel_time > 0 && g_elapsed_ms - decel_time >= 3000)
-					{
-						ramp_speed = bs;
-						state = STATE_DECEL;
+				/* 两阶段终点检测 */
+				{
+					uint8_t black_cnt = Tracking_GetBlackCount();
+
+					if (!finish_armed) {
+						if (black_cnt < 3) {
+							if (++leave_cnt >= 5) {
+								finish_armed = 1;
+								finish_cnt = 0;
+							}
+						} else {
+							leave_cnt = 0;
+						}
+					} else {
+						if (black_cnt >= 3) {
+							if (++finish_cnt >= 5) {
+								decel_time = g_elapsed_ms;
+								ramp_speed = bs;
+								state = STATE_DECEL;
+								break;
+							}
+						} else {
+							finish_cnt = 0;
+						}
+					}
+				}
+
+				/* 丢线检测 */
+				if (g_lt_raw == 0xFF) {
+					if (++lost_cnt >= 5) {
+						Motor_Stop();
+						state = STATE_DONE;
 						break;
 					}
+				} else {
+					lost_cnt = 0;
+				}
 
-				sensors = Tracking_Read();
 				OLED_ShowString(1, 1, "T:");
 				OLED_ShowNum(1, 3, g_elapsed_ms / 1000, 4);
 				OLED_ShowString(1, 7, "s");
 
-				/* 循迹 */
-				pos_sum = 0;
-				cnt = 0;
-				if (sensors & 0x01) { pos_sum -= 7; cnt++; }
-				if (sensors & 0x02) { pos_sum -= 6; cnt++; }
-				if (sensors & 0x04) { pos_sum -= 5; cnt++; }
-				if (sensors & 0x08) { pos_sum -= 2; cnt++; }
-				if (sensors & 0x10) { pos_sum += 2; cnt++; }
-				if (sensors & 0x20) { pos_sum += 5; cnt++; }
-				if (sensors & 0x40) { pos_sum += 6; cnt++; }
-				if (sensors & 0x80) { pos_sum += 7; cnt++; }
+				float error = Tracking_GetError();
+				float diff = TrackPID_Update(&track_pid, error);
+				diff += GYRO_D_GAIN * omega_z;
+				if (diff > DIFF_MAX) diff = DIFF_MAX;
+				if (diff < DIFF_MIN) diff = DIFF_MIN;
 
-				if (cnt > 0)
-				{
-					int16_t pos = pos_sum / cnt;
-					uint16_t abs_pos = (pos > 0) ? pos : -pos;
-					uint16_t numerator = md;
-					for (uint8_t p = 0; p < POWER; p++)
-						numerator = numerator * abs_pos / 7;
-					int16_t diff = numerator;
+				int16_t left  = (int16_t)bs + (int16_t)diff;
+				int16_t right = (int16_t)bs - (int16_t)diff;
 
-					if (pos < 0)
-					{
-						Motor_SetLeft( bs - diff);
-						Motor_SetRight(bs + diff);
-					}
-					else
-					{
-						Motor_SetLeft( bs + diff);
-						Motor_SetRight(bs - diff);
-					}
-				}
+				if (left  > 999)  left  = 999;
+				if (left  < -999) left  = -999;
+				if (right > 999)  right = 999;
+				if (right < -999) right = -999;
 
-				/* 平衡球 */
+				Motor_SetLeft( left);
+				Motor_SetRight(right);
+
 				pidInput = (double)UART_GetBallPosition();
 				PID_Compute(&pid);
 				Stepper_SetTarget((int32_t)pidOutput);
@@ -235,7 +350,7 @@ int main(void)
 				OLED_ShowString(3, 1, "T:");
 				OLED_ShowSignedNum(3, 3, (int32_t)pidOutput, 4);
 			}
-			else if (mode == MODE_04) /* 循迹7秒停止 */
+			else if (mode == MODE_04)
 			{
 				if (g_elapsed_ms >= 7000)
 				{
@@ -245,45 +360,37 @@ int main(void)
 					break;
 				}
 
-				sensors = Tracking_Read();
+				if (g_lt_raw == 0xFF) {
+					if (++lost_cnt >= 5) {
+						Motor_Stop();
+						state = STATE_DONE;
+						break;
+					}
+				} else {
+					lost_cnt = 0;
+				}
+
 				OLED_ShowString(1, 1, "T:");
 				OLED_ShowNum(1, 3, g_elapsed_ms / 1000, 4);
 				OLED_ShowString(1, 7, "s");
 
-				/* 循迹 */
-				pos_sum = 0;
-				cnt = 0;
-				if (sensors & 0x01) { pos_sum -= 7; cnt++; }
-				if (sensors & 0x02) { pos_sum -= 6; cnt++; }
-				if (sensors & 0x04) { pos_sum -= 4; cnt++; }
-				if (sensors & 0x08) { pos_sum -= 2; cnt++; }
-				if (sensors & 0x10) { pos_sum += 2; cnt++; }
-				if (sensors & 0x20) { pos_sum += 4; cnt++; }
-				if (sensors & 0x40) { pos_sum += 6; cnt++; }
-				if (sensors & 0x80) { pos_sum += 7; cnt++; }
+				float error = Tracking_GetError();
+				float diff = TrackPID_Update(&track_pid, error);
+				diff += GYRO_D_GAIN * omega_z;
+				if (diff > DIFF_MAX) diff = DIFF_MAX;
+				if (diff < DIFF_MIN) diff = DIFF_MIN;
 
-				if (cnt > 0)
-				{
-					int16_t pos = pos_sum / cnt;
-					uint16_t abs_pos = (pos > 0) ? pos : -pos;
-					uint16_t numerator = md;
-					for (uint8_t p = 0; p < POWER; p++)
-						numerator = numerator * abs_pos / 7;
-					int16_t diff = numerator;
+				int16_t left  = (int16_t)bs + (int16_t)diff;
+				int16_t right = (int16_t)bs - (int16_t)diff;
 
-					if (pos < 0)
-					{
-						Motor_SetLeft( bs - diff);
-						Motor_SetRight(bs + diff);
-					}
-					else
-					{
-						Motor_SetLeft( bs + diff);
-						Motor_SetRight(bs - diff);
-					}
-				}
+				if (left  > 999)  left  = 999;
+				if (left  < -999) left  = -999;
+				if (right > 999)  right = 999;
+				if (right < -999) right = -999;
 
-				/* 平衡球 */
+				Motor_SetLeft( left);
+				Motor_SetRight(right);
+
 				pidInput = (double)UART_GetBallPosition();
 				PID_Compute(&pid);
 				Stepper_SetTarget((int32_t)pidOutput);
@@ -293,56 +400,65 @@ int main(void)
 				OLED_ShowString(3, 1, "T:");
 				OLED_ShowSignedNum(3, 3, (int32_t)pidOutput, 4);
 			}
-			else if (mode == MODE_05) /* 默认速度循迹 */
+			else if (mode == MODE_05)
 			{
-				if (decel_time == 0 && Tracking_GetBlackCount() >= 3 && g_elapsed_ms >= 17000)
-					decel_time = g_elapsed_ms;
-				if (decel_time > 0 && g_elapsed_ms - decel_time >= 3000)
 				{
-					ramp_speed = bs;
-					state = STATE_DECEL;
-					break;
+					uint8_t black_cnt = Tracking_GetBlackCount();
+
+					if (!finish_armed) {
+						if (black_cnt < 3) {
+							if (++leave_cnt >= 5) {
+								finish_armed = 1;
+								finish_cnt = 0;
+							}
+						} else {
+							leave_cnt = 0;
+						}
+					} else {
+						if (black_cnt >= 3) {
+							if (++finish_cnt >= 5) {
+								decel_time = g_elapsed_ms;
+								ramp_speed = bs;
+								state = STATE_DECEL;
+								break;
+							}
+						} else {
+							finish_cnt = 0;
+						}
+					}
 				}
 
-				sensors = Tracking_Read();
+				if (g_lt_raw == 0xFF) {
+					if (++lost_cnt >= 5) {
+						Motor_Stop();
+						state = STATE_DONE;
+						break;
+					}
+				} else {
+					lost_cnt = 0;
+				}
+
 				OLED_ShowString(1, 1, "T:");
 				OLED_ShowNum(1, 3, g_elapsed_ms / 1000, 4);
 				OLED_ShowString(1, 7, "s");
 
-				/* 循迹 */
-				pos_sum = 0;
-				cnt = 0;
-				if (sensors & 0x01) { pos_sum -= 7; cnt++; }
-				if (sensors & 0x02) { pos_sum -= 6; cnt++; }
-				if (sensors & 0x04) { pos_sum -= 4; cnt++; }
-				if (sensors & 0x08) { pos_sum -= 2; cnt++; }
-				if (sensors & 0x10) { pos_sum += 2; cnt++; }
-				if (sensors & 0x20) { pos_sum += 4; cnt++; }
-				if (sensors & 0x40) { pos_sum += 6; cnt++; }
-				if (sensors & 0x80) { pos_sum += 7; cnt++; }
+				float error = Tracking_GetError();
+				float diff = TrackPID_Update(&track_pid, error);
+				diff += GYRO_D_GAIN * omega_z;
+				if (diff > DIFF_MAX) diff = DIFF_MAX;
+				if (diff < DIFF_MIN) diff = DIFF_MIN;
 
-				if (cnt > 0)
-				{
-					int16_t pos = pos_sum / cnt;
-					uint16_t abs_pos = (pos > 0) ? pos : -pos;
-					uint16_t numerator = md;
-					for (uint8_t p = 0; p < POWER; p++)
-						numerator = numerator * abs_pos / 7;
-					int16_t diff = numerator;
+				int16_t left  = (int16_t)bs + (int16_t)diff;
+				int16_t right = (int16_t)bs - (int16_t)diff;
 
-					if (pos < 0)
-					{
-						Motor_SetLeft( bs - diff);
-						Motor_SetRight(bs + diff);
-					}
-					else
-					{
-						Motor_SetLeft( bs + diff);
-						Motor_SetRight(bs - diff);
-					}
-				}
+				if (left  > 999)  left  = 999;
+				if (left  < -999) left  = -999;
+				if (right > 999)  right = 999;
+				if (right < -999) right = -999;
 
-				/* 平衡球 */
+				Motor_SetLeft( left);
+				Motor_SetRight(right);
+
 				pidInput = (double)UART_GetBallPosition();
 				PID_Compute(&pid);
 				Stepper_SetTarget((int32_t)pidOutput);
@@ -352,7 +468,7 @@ int main(void)
 				OLED_ShowString(3, 1, "T:");
 				OLED_ShowSignedNum(3, 3, (int32_t)pidOutput, 4);
 			}
-			else /* MODE_03 — 定点测试 +340 → -340 */
+			else /* MODE_03 */
 			{
 				static int8_t  sub03 = 0;
 				static uint8_t stable_cnt = 0;
@@ -360,18 +476,18 @@ int main(void)
 
 				switch (sub03)
 				{
-				case 0:	/* 设定目标 +340 */
+				case 0:
 					pidSetpoint = 340;
 					sub03 = 1;
 					stable_cnt = 0;
 					break;
 
-				case 1:	/* 等待稳定在 +340±5 持续 1s */
+				case 1:
 					error = (int32_t)(pidInput - 340);
 					if (error < 0) error = -error;
 					if (error <= 40)
 					{
-						if (++stable_cnt >= 5  /*50*/  )
+						if (++stable_cnt >= 5)
 						{
 							sub03 = 2;
 							stable_cnt = 0;
@@ -381,13 +497,13 @@ int main(void)
 						stable_cnt = 0;
 					break;
 
-				case 2:	/* 设定目标 -340 */
+				case 2:
 					pidSetpoint = -340;
 					sub03 = 3;
 					stable_cnt = 0;
 					break;
 
-				case 3:	/* 等待稳定在 -340±5 */
+				case 3:
 					error = (int32_t)(pidInput + 340);
 					if (error < 0) error = -error;
 					if (error <= 50)
@@ -410,7 +526,6 @@ int main(void)
 					break;
 				}
 
-				/* 平衡球 */
 				pidInput = (double)UART_GetBallPosition();
 				PID_Compute(&pid);
 				Stepper_SetTarget((int32_t)pidOutput);
@@ -428,41 +543,28 @@ int main(void)
 
 		case STATE_DECEL:
 			{
-				uint16_t step = (bs >= 200) ? 2 : 1;
 				if (ramp_speed > step)
 					ramp_speed -= step;
 				else
 					ramp_speed = 0;
 
-				sensors = Tracking_Read();
-				pos_sum = 0;
-				cnt = 0;
-				if (sensors & 0x01) { pos_sum -= 7; cnt++; }
-				if (sensors & 0x02) { pos_sum -= 6; cnt++; }
-				if (sensors & 0x04) { pos_sum -= 5; cnt++; }
-				if (sensors & 0x08) { pos_sum -= 2; cnt++; }
-				if (sensors & 0x10) { pos_sum += 2; cnt++; }
-				if (sensors & 0x20) { pos_sum += 5; cnt++; }
-				if (sensors & 0x40) { pos_sum += 6; cnt++; }
-				if (sensors & 0x80) { pos_sum += 7; cnt++; }
-				if (cnt > 0)
-				{
-					int16_t pos = pos_sum / cnt;
-					uint16_t abs_pos = (pos > 0) ? pos : -pos;
-					uint16_t numerator = md;
-					for (uint8_t p = 0; p < POWER; p++)
-						numerator = numerator * abs_pos / 7;
-					int16_t diff = numerator;
-					if (pos < 0) { Motor_SetLeft(ramp_speed - diff); Motor_SetRight(ramp_speed + diff); }
-					else         { Motor_SetLeft(ramp_speed + diff); Motor_SetRight(ramp_speed - diff); }
-				}
-				else
-				{
-					Motor_SetLeft( ramp_speed);
-					Motor_SetRight(ramp_speed);
-				}
+				float error = Tracking_GetError();
+				float diff = TrackPID_Update(&track_pid, error);
+				diff += GYRO_D_GAIN * omega_z;
+				if (diff > DIFF_MAX) diff = DIFF_MAX;
+				if (diff < DIFF_MIN) diff = DIFF_MIN;
 
-				/* 平衡球 */
+				int16_t left  = (int16_t)ramp_speed + (int16_t)diff;
+				int16_t right = (int16_t)ramp_speed - (int16_t)diff;
+
+				if (left  > 999)  left  = 999;
+				if (left  < -999) left  = -999;
+				if (right > 999)  right = 999;
+				if (right < -999) right = -999;
+
+				Motor_SetLeft( left);
+				Motor_SetRight(right);
+
 				pidInput = (double)UART_GetBallPosition();
 				PID_Compute(&pid);
 				Stepper_SetTarget((int32_t)pidOutput);
@@ -483,18 +585,21 @@ int main(void)
 			break;
 
 		case STATE_DONE:
-			/* 平衡球 */
 			pidInput = (double)UART_GetBallPosition();
 			PID_Compute(&pid);
 			Stepper_SetTarget((int32_t)pidOutput);
 
-			/* 按 PB15 重新开始 */
 			if (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_15) == 0)
 			{
+				TrackPID_Reset(&track_pid);
 				OLED_Clear();
 				g_elapsed_ms = 0;
 				ramp_speed = 0;
 				decel_time = 0;
+				finish_armed = 0;
+				finish_cnt = 0;
+				leave_cnt = 0;
+				lost_cnt = 0;
 				state = STATE_ACCEL;
 			}
 			break;

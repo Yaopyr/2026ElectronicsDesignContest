@@ -1,11 +1,12 @@
 #ifndef __TRACKING_H
 #define __TRACKING_H
-
 #include "stm32f10x.h"
 
-void Tracking_Init(void);
+extern volatile uint8_t g_lt_raw;
+extern volatile float  g_lt_error;
+
+void    Tracking_Init(void);
 uint8_t Tracking_Read(void);
 uint8_t Tracking_GetBlackCount(void);
-void Tracking_WaitStart(void);
-
+float   Tracking_GetError(void);
 #endif

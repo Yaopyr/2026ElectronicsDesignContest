@@ -144,6 +144,7 @@ int main(void)
 				OLED_Clear();
 				g_elapsed_ms = 0;
 				ramp_speed = 0;
+				decel_time = 0;
 				state = STATE_ACCEL;
 			}
 			break;
@@ -152,13 +153,14 @@ int main(void)
 			if (mode == MODE_02)
 			{
 				/* 停止条件 */
-				if (Tracking_GetBlackCount() >= 3 && g_elapsed_ms >= 18000)
-				{
-					ramp_speed = bs;
-					decel_time = g_elapsed_ms;
-					state = STATE_DECEL;
-					break;
-				}
+					if (decel_time == 0 && Tracking_GetBlackCount() >= 3 && g_elapsed_ms >= 18000)
+						decel_time = g_elapsed_ms;
+					if (decel_time > 0 && g_elapsed_ms - decel_time >= 3000)
+					{
+						ramp_speed = bs;
+						state = STATE_DECEL;
+						break;
+					}
 
 				sensors = Tracking_Read();
 				OLED_ShowString(1, 1, "T:");
@@ -268,10 +270,11 @@ int main(void)
 			}
 			else if (mode == MODE_05) /* 默认速度循迹 */
 			{
-				if (Tracking_GetBlackCount() >= 3 && g_elapsed_ms >= 17000)
+				if (decel_time == 0 && Tracking_GetBlackCount() >= 3 && g_elapsed_ms >= 17000)
+					decel_time = g_elapsed_ms;
+				if (decel_time > 0 && g_elapsed_ms - decel_time >= 3000)
 				{
 					ramp_speed = bs;
-					decel_time = g_elapsed_ms;
 					state = STATE_DECEL;
 					break;
 				}
@@ -441,6 +444,7 @@ int main(void)
 				OLED_Clear();
 				g_elapsed_ms = 0;
 				ramp_speed = 0;
+				decel_time = 0;
 				state = STATE_ACCEL;
 			}
 			break;

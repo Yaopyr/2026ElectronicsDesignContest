@@ -1,6 +1,13 @@
 #include "stm32f10x.h"
 #include "OLED_Font.h"
 
+/* ============================================================================
+ * OLED.c — SSD1306 128x64 OLED 显示（软件模拟 I2C，无应答检测）
+ *   接线：PA4=SCL, PA5=SDA（开漏输出，需外部上拉）
+ *   从机地址 0x78（0x3C<<1，只写）；命令字节 0x00 / 数据字节 0x40
+ *   显示规格：8x16 字库，4 行 × 16 列（OLED_ShowString/Num 按行/列定位）
+ * ========================================================================== */
+
 /*引脚配置*/
 #define OLED_W_SCL(x)		GPIO_WriteBit(GPIOA, GPIO_Pin_4, (BitAction)(x))
 #define OLED_W_SDA(x)		GPIO_WriteBit(GPIOA, GPIO_Pin_5, (BitAction)(x))

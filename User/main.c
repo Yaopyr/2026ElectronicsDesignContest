@@ -1,3 +1,22 @@
+/* ============================================================================
+ * 主程序：循迹+平衡球小车状态机（2026 电赛）
+ *
+ * 任务分工：
+ *   循迹  —— 8 路循迹传感器(I2C2 PB10/11)误差 → TrackPID + JY61P 陀螺仪阻尼
+ *             → 差速驱动 TB6612(TIM5_CH1 左轮 PA0 / TIM1_CH4 右轮 PA11)
+ *   平衡球 —— UART1 收到 K230 球位(±1000) → 球 PID(20ms 采样) → 步进电机
+ *             (TIM6 脉冲 2kHz, 输出限幅 ±STEP_RANGE=±800 步 ≈ ±45°)
+ *
+ * 系统节拍：TIM2 产生 1ms 中断 → g_elapsed_ms（本文件定义，供 PID/JY61P 使用）
+ * 主循环：20ms 超循环（Delay_ms(20)），每循环刷新编码器/陀螺仪/循迹/调球
+ *
+ * 工作模式（PB0 按下循环切换，PB1 按下启动）：
+ *   MODE_02 循迹+平衡球（4+传感器见黑线且>17s → 停车 → 全速后退100ms）
+ *   MODE_03 定点测试：球目标 +340 → 稳定后 → -340 → 稳定后停车
+ *   MODE_04 循迹 5s 后缓启缓停（约 1.5s 斜坡）
+ *   MODE_05 循迹降速 20% + 缓启缓停 + 终点触发后延长循迹 3s 再缓停
+ *   MODE_06 同 MODE_05 + 编码器实时调节平衡球目标（±12cm）
+ * ========================================================================== */
 #include "stm32f10x.h"
 #include "Delay.h"
 #include "Tracking.h"
@@ -115,7 +134,7 @@ typedef enum {
 	MODE_03,	// 定点测试：+340 → -340
 	MODE_04,	// 循迹4秒停止（缓缓启停）
 	MODE_05,	// 循迹（降速20%+缓启缓停+触发后3s再缓停）
-	MODE_06		// 循迹同05 + 编码器调平衡球目标（±12mm）
+	MODE_06		// 循迹同05 + 编码器调平衡球目标（±12cm，TARGET_MAX 限幅）
 } Mode_TypeDef;
 
 int main(void)
@@ -150,13 +169,16 @@ int main(void)
 	NVIC_Init(&NVIC_InitStructure);
 	TIM_Cmd(TIM2, ENABLE);
 
-	/* 球平衡 PID */
+	/* 球平衡 PID（调节对象：K230 球位）
+	 *   pidInput    球位置读数（UART1，±1000 对应 K230 ROI 左右两端）
+	 *   pidSetpoint 球目标（MODE_06 由编码器换算 cm → 74×cm−30）
+	 *   pidOutput   步进电机目标步数（限幅 ±STEP_RANGE=±800 ≈ ±45°） */
 	double pidInput = 0, pidOutput = 0, pidSetpoint = 0;
 	PID_TypeDef pid;
 	PID(&pid, &pidInput, &pidOutput, &pidSetpoint, PID_KP, PID_KI, PID_KD,
 	    _PID_P_ON_E, _PID_CD_DIRECT);
 	PID_SetMode(&pid, _PID_MODE_AUTOMATIC);
-	PID_SetSampleTime(&pid, 20);
+	PID_SetSampleTime(&pid, 20);	/* 与主循环同频，20ms 计算一次 */
 	PID_SetOutputLimits(&pid, -STEP_RANGE, STEP_RANGE);
 
 	/* 循迹 PID */
@@ -371,7 +393,7 @@ int main(void)
 		case STATE_RUN:
 			if (mode == MODE_02)
 			{
-				/* MODE_02 终点检测：3+ 传感器见黑线且启动超 10s → 直接停车 */
+				/* MODE_02 终点检测：4+ 传感器见黑线且启动超 17s → 直接停车 */
 				{
 					uint8_t black_cnt = Tracking_GetBlackCount();
 					if (black_cnt >= 4 && g_elapsed_ms > 17000)
@@ -609,15 +631,16 @@ int main(void)
 				static uint8_t stable_cnt = 0;
 				int32_t error;
 
+				/* sub03：定点测试子状态机（球目标 +340 → 稳定 → -340 → 稳定 → 停车） */
 				switch (sub03)
 				{
-				case 0:
+				case 0:		/* 目标设为 +340，等待稳定 */
 					pidSetpoint = 340;
 					sub03 = 1;
 					stable_cnt = 0;
 					break;
 
-				case 1:
+				case 1:		/* 球位进入 |P−340|≤40 连续 5 个循环（100ms）→ 通过 */
 					error = (int32_t)(pidInput - 340);
 					if (error < 0) error = -error;
 					if (error <= 40)
@@ -632,13 +655,13 @@ int main(void)
 						stable_cnt = 0;
 					break;
 
-				case 2:
+				case 2:		/* 目标切到 -340，等待稳定 */
 					pidSetpoint = -340;
 					sub03 = 3;
 					stable_cnt = 0;
 					break;
 
-				case 3:
+				case 3:		/* 球位进入 |P+340|≤50 连续 5 个循环 → 停车并显示用时 */
 					error = (int32_t)(pidInput + 340);
 					if (error < 0) error = -error;
 					if (error <= 50)

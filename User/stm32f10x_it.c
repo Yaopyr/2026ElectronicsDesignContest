@@ -138,6 +138,8 @@ void SysTick_Handler(void)
 {
 }
 
+/* TIM2 1ms 系统节拍中断（main.c 配置：72MHz/72/1000=1kHz）
+ * 递增 g_elapsed_ms，供球 PID(GetTime)、JY61P 新鲜度判断及模式计时使用 */
 void TIM2_IRQHandler(void)
 {
 	if (TIM_GetITStatus(TIM2, TIM_IT_Update) != RESET)

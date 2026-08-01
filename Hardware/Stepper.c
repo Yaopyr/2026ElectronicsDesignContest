@@ -1,5 +1,15 @@
 #include "Stepper.h"
 
+/* ============================================================================
+ * Stepper.c — 步进电机位置伺服（平衡球执行器：平台俯仰）
+ *   引脚：PB8=STEP（脉冲）, PB9=DIR（方向）
+ *   脉冲生成：TIM6 中断 10kHz(100µs)，每 5 tick(500µs) 输出一个 ~1µs 脉冲
+ *             → 步频 2kHz；脉冲数由 g_step_current 与目标差值决定
+ *   位置：g_step_target 由球 PID 输出经 Stepper_SetTarget 设置，
+ *         限幅 ±STEP_RANGE=±800 步 ≈ ±45°（1.8°×32 细分=6400 脉冲/圈）
+ *   正负号：目标>当前 → DIR=1 抬升；反之 DIR=0
+ * ========================================================================== */
+
 /* 引脚：PB8=STEP, PB9=DIR */
 #define STEP_PORT	GPIOB
 #define STEP_PIN	GPIO_Pin_8
@@ -49,6 +59,7 @@ void Stepper_Init(void)
 	TIM_Cmd(TIM6, ENABLE);
 }
 
+/* 设置步进目标位置（相对中位，正=抬升），限幅 ±STEP_RANGE 后由 TIM6 ISR 追踪 */
 void Stepper_SetTarget(int32_t steps)
 {
 	/* 限幅 */

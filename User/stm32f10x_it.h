@@ -44,9 +44,9 @@ void SVC_Handler(void);
 void DebugMon_Handler(void);
 void PendSV_Handler(void);
 void SysTick_Handler(void);
-void TIM2_IRQHandler(void);
-void USART1_IRQHandler(void);
-void TIM4_IRQHandler(void);
+void TIM2_IRQHandler(void);		/* 1ms 节拍（本文件 it.c 实现） */
+void USART1_IRQHandler(void);	/* K230 球位接收（UART.c 实现） */
+void TIM4_IRQHandler(void);		/* ⚠ 仅声明，全项目无定义（未启用 TIM4 中断；定义在 Encoder.c 左编码器使用处） */
 
 #ifdef __cplusplus
 }

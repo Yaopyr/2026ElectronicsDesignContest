@@ -11,7 +11,7 @@
  * 主循环：20ms 超循环（Delay_ms(20)），每循环刷新编码器/陀螺仪/循迹/调球
  *
  * 工作模式（PB0 按下循环切换，PB1 按下启动）：
- *   MODE_02 循迹+平衡球（4+传感器见黑线且>17s → 停车 → 全速后退100ms）
+ *   MODE_02 循迹+平衡球（3+传感器见黑线且>16s → 停车 → 全速后退100ms）
  *   MODE_03 定点测试：球目标 +340 → 稳定后 → -340 → 稳定后停车
  *   MODE_04 循迹 5s 后缓启缓停（约 1.5s 斜坡）
  *   MODE_05 循迹降速 20% + 缓启缓停 + 终点触发后延长循迹 3s 再缓停
@@ -31,13 +31,13 @@
 
 /* 球平衡 PID */
 #define PID_KP		1.2
-#define PID_KI		0.25//0.2
-#define PID_KD		0.35
+#define PID_KI		0.27//0.9//0.85//0.65//0.6//0.58//0.4//0.35//0.3//0.25//0.2
+#define PID_KD		0.34
 
 /* 循迹 PID（来自 gulaoshi track_ctrl.c） */
 #define TRACK_KP      40.0f//30.0f//15.0f//25.0f	/* 小误差修正温和（直道）；弯道误差大走饱和区不受影响 */
 #define TRACK_KI      0.3f
-#define GYRO_D_GAIN   5.0f//10.0f//5.0f//15.0f//20.0f//15.0f//10.0f	/* 弯道中低速段阻尼翻倍；饱和区由DIFF限幅主导 */
+#define GYRO_D_GAIN   4.0f//10.0f//5.0f//15.0f//20.0f//15.0f//10.0f	/* 弯道中低速段阻尼翻倍；饱和区由DIFF限幅主导 */
 #define DIFF_MAX      120.0f//150.0f//200.0f//150.0f//250.0f
 #define DIFF_MIN     -120.0f//-150.0f//-200.0f//-150.0f//-250.0f
 #define I_MAX         80.0f
@@ -217,7 +217,7 @@ int main(void)
 		static uint8_t lost_cnt = 0;
 
 		uint8_t m056 = (mode == MODE_05 || mode == MODE_06);	/* MODE_05/06 共用特调参数 */
-		uint16_t bs = m056 ? 240 : 300;	/* MODE_05/06 全程降速20% */
+		uint16_t bs = m056 ? 240 : 280;	/* MODE_05/06 全程降速20% */
 		uint16_t step = (mode == MODE_04) ? 4 : (m056) ? 3 : 80;	/* MODE_04/05/06 缓启缓停约1.5s；其余 gulaoshi 4000/s */
 		float gyro_gain = m056 ? 1.8f : GYRO_D_GAIN;	/* MODE_05/06 陀螺仪阻尼 1.8，其余 5 */
 
@@ -393,10 +393,10 @@ int main(void)
 		case STATE_RUN:
 			if (mode == MODE_02)
 			{
-				/* MODE_02 终点检测：4+ 传感器见黑线且启动超 17s → 直接停车 */
+				/* MODE_02 终点检测：3+ 传感器见黑线且启动超 16s → 直接停车 */
 				{
 					uint8_t black_cnt = Tracking_GetBlackCount();
-					if (black_cnt >= 4 && g_elapsed_ms > 17000)
+					if (black_cnt >= 3 && g_elapsed_ms > 16000)
 					{
 						decel_time = g_elapsed_ms;	/* 触发即冻结计时 */
 						Motor_Stop();
@@ -469,7 +469,7 @@ int main(void)
 			}
 			else if (mode == MODE_04)
 			{
-				if (g_elapsed_ms >= 5000)
+				if (g_elapsed_ms >= 5500)
 				{
 					ramp_speed = bs;
 					decel_time = g_elapsed_ms;

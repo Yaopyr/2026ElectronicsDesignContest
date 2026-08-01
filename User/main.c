@@ -31,6 +31,11 @@
 #define TARGET_K          0.02f			/* 左轮编码器增量 → cm（需实测标定） */
 #define TARGET_MAX        12.0f			/* ±12.0 cm 双向限幅 */
 
+/* MODE_06 特调球 PID（target ≤ −4.0cm 时，按开始后生效） */
+#define PID06_KP  1.0f
+#define PID06_KI  0.25f
+#define PID06_KD  0.20f
+
 volatile uint32_t g_elapsed_ms;
 
 /* ========== 循迹 PID（与 gulaoshi pid.c 算法一致） ========== */
@@ -179,6 +184,7 @@ int main(void)
 		static uint32_t extend_start = 0;	/* MODE_05 触发后延长循迹起点 */
 		static uint8_t  extending    = 0;	/* MODE_05 延长循迹中 */
 		static float ball_target = 0.0f;	/* MODE_06 平衡球目标(cm)，默认 00.0 */
+		static uint8_t pid06_low = 0xFF;	/* MODE_06 特调选择：0=默认 1=特调 0xFF=未在06 */
 
 		/* 两阶段终点检测 */
 		static uint8_t finish_armed = 0;
@@ -206,6 +212,24 @@ int main(void)
 		} else {
 			omega_z = last_valid_omega;
 			g_imu_ok = 0;
+		}
+
+		/* MODE_06：target ≤ −4.0cm 实时切特调球 PID（含调节阶段与开始后） */
+		if (mode == MODE_06)
+		{
+			uint8_t low = (ball_target <= -4.0f);
+			if (low != pid06_low)
+			{
+				PID_SetTunings(&pid, low ? PID06_KP : PID_KP,
+				                      low ? PID06_KI : PID_KI,
+				                      low ? PID06_KD : PID_KD);
+				pid06_low = low;
+			}
+		}
+		else if (pid06_low != 0xFF)
+		{
+			PID_SetTunings(&pid, PID_KP, PID_KI, PID_KD);	/* 切出06恢复默认 */
+			pid06_low = 0xFF;
 		}
 
 		switch (state)

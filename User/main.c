@@ -25,6 +25,12 @@
 #define I_SEP         15.0f
 #define TRACK_OUT_MAX 1000.0f	/* PID 内部限幅（gulaoshi 双级限幅） */
 
+/* MODE_06 平衡球目标调节（单位 cm；实测：+5cm→340, +7cm→490, +10cm→710 → setpoint = 74×cm − 30） */
+#define TARGET_SP_SLOPE   74.0f			/* 单位/cm */
+#define TARGET_SP_OFFSET -30.0f			/* 零点偏移 */
+#define TARGET_K          0.02f			/* 左轮编码器增量 → cm（需实测标定） */
+#define TARGET_MAX        12.0f			/* ±12.0 cm 双向限幅 */
+
 volatile uint32_t g_elapsed_ms;
 
 /* ========== 循迹 PID（与 gulaoshi pid.c 算法一致） ========== */
@@ -103,7 +109,8 @@ typedef enum {
 	MODE_02,	// 循迹 + 平衡球
 	MODE_03,	// 定点测试：+340 → -340
 	MODE_04,	// 循迹4秒停止（缓缓启停）
-	MODE_05		// 循迹（降速20%+缓启缓停+触发后3s再缓停）
+	MODE_05,	// 循迹（降速20%+缓启缓停+触发后3s再缓停）
+	MODE_06		// 循迹同05 + 编码器调平衡球目标（±12mm）
 } Mode_TypeDef;
 
 int main(void)
@@ -171,6 +178,7 @@ int main(void)
 		static uint32_t back_start_ms = 0;	/* MODE_02 停止后全速后退起点 */
 		static uint32_t extend_start = 0;	/* MODE_05 触发后延长循迹起点 */
 		static uint8_t  extending    = 0;	/* MODE_05 延长循迹中 */
+		static float ball_target = 0.0f;	/* MODE_06 平衡球目标(cm)，默认 00.0 */
 
 		/* 两阶段终点检测 */
 		static uint8_t finish_armed = 0;
@@ -180,9 +188,10 @@ int main(void)
 		/* 丢线检测 */
 		static uint8_t lost_cnt = 0;
 
-		uint16_t bs = (mode == MODE_05) ? 240 : 300;	/* MODE_05 全程降速20% */
-		uint16_t step = (mode == MODE_04) ? 4 : (mode == MODE_05) ? 3 : 80;	/* MODE_04/05 缓启缓停约1.5s（240/3*20ms=1.6s）；其余 gulaoshi 4000/s */
-		float gyro_gain = (mode == MODE_05) ? 1.8f : GYRO_D_GAIN;	/* MODE_05 陀螺仪阻尼 3，其余 5 */
+		uint8_t m056 = (mode == MODE_05 || mode == MODE_06);	/* MODE_05/06 共用特调参数 */
+		uint16_t bs = m056 ? 240 : 300;	/* MODE_05/06 全程降速20% */
+		uint16_t step = (mode == MODE_04) ? 4 : (m056) ? 3 : 80;	/* MODE_04/05/06 缓启缓停约1.5s；其余 gulaoshi 4000/s */
+		float gyro_gain = m056 ? 1.8f : GYRO_D_GAIN;	/* MODE_05/06 陀螺仪阻尼 1.8，其余 5 */
 
 		/* 编码器速度更新 */
 		Encoder_Update();
@@ -267,28 +276,57 @@ int main(void)
 			break;
 
 		case STATE_WAIT:
+			if (mode == MODE_06)
+			{
+				/* 左轮编码器调节目标：正转增加/反转减少，实时作用于平衡球 */
+				ball_target += (float)Encoder_GetSpeedLeft() * TARGET_K;
+				if (ball_target >  TARGET_MAX) ball_target =  TARGET_MAX;
+				if (ball_target < -TARGET_MAX) ball_target = -TARGET_MAX;
+				pidSetpoint = (double)(ball_target * TARGET_SP_SLOPE + TARGET_SP_OFFSET);
+			}
+			else
+			{
+				pidSetpoint = 0;	/* 切回其他模式时球回中 */
+			}
+
 			/* 平衡球 */
 			pidInput = (double)UART_GetBallPosition();
 			PID_Compute(&pid);
 			Stepper_SetTarget((int32_t)pidOutput);
 
 			OLED_ShowString(1, 1, "M:");
-			OLED_ShowNum(1, 3, (mode == MODE_02) ? 2 : (mode == MODE_03) ? 3 : (mode == MODE_04) ? 4 : 5, 2);
-			OLED_ShowString(2, 1, "P:");
-			OLED_ShowSignedNum(2, 3, (int32_t)pidInput, 4);
-			OLED_ShowString(3, 1, "T:");
-			OLED_ShowSignedNum(3, 3, (int32_t)pidOutput, 4);
+			OLED_ShowNum(1, 3, (mode == MODE_02) ? 2 : (mode == MODE_03) ? 3 : (mode == MODE_04) ? 4 : (mode == MODE_05) ? 5 : 6, 2);
+			if (mode == MODE_06)
+			{
+				/* Target: xx.x cm（±12.0 双向） */
+				int16_t t10 = (int16_t)(ball_target * 10.0f);
+				OLED_ShowString(2, 1, "Target:");
+				if (t10 < 0) { OLED_ShowString(2, 8, "-"); OLED_ShowNum(2, 9, -t10 / 10, 2); }
+				else         { OLED_ShowString(2, 8, " "); OLED_ShowNum(2, 9,  t10 / 10, 2); }
+				OLED_ShowString(2, 11, ".");
+				OLED_ShowNum(2, 12, (t10 < 0 ? -t10 : t10) % 10, 1);
+				OLED_ShowString(2, 13, "cm");
+				OLED_ShowString(3, 1, "P:");
+				OLED_ShowSignedNum(3, 3, (int32_t)pidInput, 4);
+			}
+			else
+			{
+				OLED_ShowString(2, 1, "P:");
+				OLED_ShowSignedNum(2, 3, (int32_t)pidInput, 4);
+				OLED_ShowString(3, 1, "T:");
+				OLED_ShowSignedNum(3, 3, (int32_t)pidOutput, 4);
+			}
 
 			{
 				uint8_t pb0_now = GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_0);
 				if (pb0_prev == 1 && pb0_now == 0)
-					mode = (mode == MODE_02) ? MODE_03 : (mode == MODE_03) ? MODE_04 : (mode == MODE_04) ? MODE_05 : MODE_02;
+					mode = (mode == MODE_02) ? MODE_03 : (mode == MODE_03) ? MODE_04 : (mode == MODE_04) ? MODE_05 : (mode == MODE_05) ? MODE_06 : MODE_02;
 				pb0_prev = pb0_now;
 			}
 
 			if (GPIO_ReadInputDataBit(GPIOB, GPIO_Pin_1) == 0)
 			{
-				pidSetpoint = 0;
+				pidSetpoint = (mode == MODE_06) ? (double)(ball_target * TARGET_SP_SLOPE + TARGET_SP_OFFSET) : 0;
 				PID_SetMode(&pid, _PID_MODE_AUTOMATIC);
 				TrackPID_Reset(&track_pid);
 				OLED_Clear();
@@ -449,7 +487,7 @@ int main(void)
 				OLED_ShowString(3, 1, "T:");
 				OLED_ShowSignedNum(3, 3, (int32_t)pidOutput, 4);
 			}
-			else if (mode == MODE_05)
+			else if (m056)
 			{
 				/* 触发后延长循迹 3s 再进入缓停 */
 				if (extending && g_elapsed_ms - extend_start >= 3000)

@@ -103,7 +103,7 @@ typedef enum {
 	MODE_02,	// 循迹 + 平衡球
 	MODE_03,	// 定点测试：+340 → -340
 	MODE_04,	// 循迹4秒停止（缓缓启停）
-	MODE_05		// 默认速度循迹
+	MODE_05		// 循迹（降速20%+缓启缓停+触发后3s再缓停）
 } Mode_TypeDef;
 
 int main(void)
@@ -169,6 +169,8 @@ int main(void)
 		static int16_t ramp_speed = 0;
 		static uint32_t decel_time = 0;
 		static uint32_t back_start_ms = 0;	/* MODE_02 停止后全速后退起点 */
+		static uint32_t extend_start = 0;	/* MODE_05 触发后延长循迹起点 */
+		static uint8_t  extending    = 0;	/* MODE_05 延长循迹中 */
 
 		/* 两阶段终点检测 */
 		static uint8_t finish_armed = 0;
@@ -178,8 +180,9 @@ int main(void)
 		/* 丢线检测 */
 		static uint8_t lost_cnt = 0;
 
-		uint16_t bs = 300;
-		uint16_t step = (mode == MODE_04) ? 4 : 80;	/* MODE_04 缓启缓停各约1.5s（300/4*20ms）；其余 gulaoshi 4000/s */
+		uint16_t bs = (mode == MODE_05) ? 240 : 300;	/* MODE_05 全程降速20% */
+		uint16_t step = (mode == MODE_04) ? 4 : (mode == MODE_05) ? 3 : 80;	/* MODE_04/05 缓启缓停约1.5s（240/3*20ms=1.6s）；其余 gulaoshi 4000/s */
+		float gyro_gain = (mode == MODE_05) ? 1.8f : GYRO_D_GAIN;	/* MODE_05 陀螺仪阻尼 3，其余 5 */
 
 		/* 编码器速度更新 */
 		Encoder_Update();
@@ -208,7 +211,7 @@ int main(void)
 
 				float error = Tracking_GetError();
 				float diff = -TrackPID_Update(&track_pid, error);	/* 差速取反：修正转向方向（位序/电机接反） */
-				diff -= GYRO_D_GAIN * omega_z;	/* 阻尼：JY61P 顺时针为正，实测须取反才构成抑制 */
+				diff -= gyro_gain * omega_z;	/* 阻尼：JY61P 顺时针为正，实测须取反才构成抑制 */
 				if (diff > DIFF_MAX) diff = DIFF_MAX;
 				if (diff < DIFF_MIN) diff = DIFF_MIN;
 
@@ -293,6 +296,8 @@ int main(void)
 				ramp_speed = 0;
 				decel_time = 0;
 				back_start_ms = 0;
+				extend_start = 0;
+				extending    = 0;
 				finish_armed = 0;
 				finish_cnt = 0;
 				leave_cnt = 0;
@@ -354,7 +359,7 @@ int main(void)
 
 				float error = Tracking_GetError();
 				float diff = -TrackPID_Update(&track_pid, error);	/* 差速取反：修正转向方向（位序/电机接反） */
-				diff -= GYRO_D_GAIN * omega_z;	/* 阻尼：JY61P 顺时针为正，实测须取反才构成抑制 */
+				diff -= gyro_gain * omega_z;	/* 阻尼：JY61P 顺时针为正，实测须取反才构成抑制 */
 				if (diff > DIFF_MAX) diff = DIFF_MAX;
 				if (diff < DIFF_MIN) diff = DIFF_MIN;
 
@@ -420,7 +425,7 @@ int main(void)
 
 				float error = Tracking_GetError();
 				float diff = -TrackPID_Update(&track_pid, error);	/* 差速取反：修正转向方向（位序/电机接反） */
-				diff -= GYRO_D_GAIN * omega_z;	/* 阻尼：JY61P 顺时针为正，实测须取反才构成抑制 */
+				diff -= gyro_gain * omega_z;	/* 阻尼：JY61P 顺时针为正，实测须取反才构成抑制 */
 				if (diff > DIFF_MAX) diff = DIFF_MAX;
 				if (diff < DIFF_MIN) diff = DIFF_MIN;
 
@@ -446,6 +451,15 @@ int main(void)
 			}
 			else if (mode == MODE_05)
 			{
+				/* 触发后延长循迹 3s 再进入缓停 */
+				if (extending && g_elapsed_ms - extend_start >= 3000)
+				{
+					ramp_speed = bs;
+					extending = 0;
+					state = STATE_DECEL;
+					break;
+				}
+
 				{
 					uint8_t black_cnt = Tracking_GetBlackCount();
 
@@ -460,11 +474,10 @@ int main(void)
 						}
 					} else {
 						if (black_cnt >= 3) {
-							if (++finish_cnt >= 5) {
-								decel_time = g_elapsed_ms;
-								ramp_speed = bs;
-								state = STATE_DECEL;
-								break;
+							if (!extending && ++finish_cnt >= 5) {
+								decel_time = g_elapsed_ms;	/* 触发即冻结计时 */
+								extend_start = g_elapsed_ms;	/* 触发后继续循迹3s再缓停 */
+								extending = 1;
 							}
 						} else {
 							finish_cnt = 0;
@@ -504,7 +517,7 @@ int main(void)
 
 				float error = Tracking_GetError();
 				float diff = -TrackPID_Update(&track_pid, error);	/* 差速取反：修正转向方向（位序/电机接反） */
-				diff -= GYRO_D_GAIN * omega_z;	/* 阻尼：JY61P 顺时针为正，实测须取反才构成抑制 */
+				diff -= gyro_gain * omega_z;	/* 阻尼：JY61P 顺时针为正，实测须取反才构成抑制 */
 				if (diff > DIFF_MAX) diff = DIFF_MAX;
 				if (diff < DIFF_MIN) diff = DIFF_MIN;
 
@@ -610,7 +623,7 @@ int main(void)
 
 				float error = Tracking_GetError();
 				float diff = -TrackPID_Update(&track_pid, error);	/* 差速取反：修正转向方向（位序/电机接反） */
-				diff -= GYRO_D_GAIN * omega_z;	/* 阻尼：JY61P 顺时针为正，实测须取反才构成抑制 */
+				diff -= gyro_gain * omega_z;	/* 阻尼：JY61P 顺时针为正，实测须取反才构成抑制 */
 				if (diff > DIFF_MAX) diff = DIFF_MAX;
 				if (diff < DIFF_MIN) diff = DIFF_MIN;
 
@@ -690,6 +703,8 @@ int main(void)
 				ramp_speed = 0;
 				decel_time = 0;
 				back_start_ms = 0;
+				extend_start = 0;
+				extending    = 0;
 				finish_armed = 0;
 				finish_cnt = 0;
 				leave_cnt = 0;
